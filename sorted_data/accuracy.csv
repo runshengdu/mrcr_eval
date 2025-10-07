@@ -1,0 +1,7 @@
+bin,models
+"[4000, 5000)","deepseek-3.1_2needle=0.992393|n=24, deepseek-3.1_4needle=0.751547|n=20, deepseek-3.2_2needle=0.870218|n=24, deepseek-3.2_4needle=0.727447|n=20"
+"[7000, 8000)","deepseek-3.1_2needle=0.874315|n=15, deepseek-3.1_4needle=0.534969|n=26, deepseek-3.2_2needle=0.750187|n=15, deepseek-3.2_4needle=0.532588|n=26"
+"[10000, 20000)","deepseek-3.1_2needle=0.792059|n=97, deepseek-3.1_4needle=0.588909|n=107, deepseek-3.2_2needle=0.737516|n=97, deepseek-3.2_4needle=0.521210|n=107"
+"[30000, 40000)","deepseek-3.1_2needle=0.726804|n=35, deepseek-3.1_4needle=0.460874|n=32, deepseek-3.2_2needle=0.674262|n=35, deepseek-3.2_4needle=0.508214|n=32"
+"[50000, 60000)","deepseek-3.1_2needle=0.596610|n=35, deepseek-3.1_4needle=0.394156|n=34, deepseek-3.2_2needle=0.523384|n=35, deepseek-3.2_4needle=0.511314|n=34"
+"[100000, 115200.0)","deepseek-3.1_2needle=0.618804|n=22, deepseek-3.1_4needle=0.380437|n=13, deepseek-3.2_2needle=0.540180|n=22, deepseek-3.2_4needle=0.375465|n=13"
