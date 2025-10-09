@@ -59,7 +59,7 @@ def main():
     x_positions_plot = x_positions
     x_labels_plot = x_labels
 
-    plt.figure(figsize=(15, 10))
+    plt.figure(figsize=(20, 10))
     for model in sorted(per_model.keys()):
         ys_full = per_model[model]
         ys_plot = ys_full
