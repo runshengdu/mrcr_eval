@@ -2,17 +2,16 @@ import pandas as pd
 from pathlib import Path
 import os
 import re
-import matplotlib.pyplot as plt
 
 START_TOKEN = 4000
 MAX_TOKEN = 128000*0.9
 
 bins = [
-    (4000, 5000),
+    (START_TOKEN, 5000),
     (7000, 8000),
-    (10000, 20000),
-    (30000, 40000),
-    (50000, 60000),
+    (10000, 15000),
+    (30000, 35000),
+    (60000, 65000),
     (100000, MAX_TOKEN),
 ]
 

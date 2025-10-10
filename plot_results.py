@@ -70,7 +70,7 @@ def main():
     plt.ylabel("Average grade")
     plt.xticks(x_positions_plot, x_labels_plot, rotation=45, ha="right")
     plt.ylim(0.0, 1.0)
-    plt.yticks([i / 10 for i in range(0, 11)])
+    plt.yticks([i / 20 for i in range(0, 21)])
     plt.grid(True, linestyle="--", alpha=0.4)
     plt.legend()
 

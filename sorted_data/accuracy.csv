@@ -1,7 +1,7 @@
 bin,models
-"[4000, 5000)","deepseek-3.1_2needle=0.992393|n=24, deepseek-3.1_4needle=0.751547|n=20, deepseek-3.2_2needle=0.870218|n=24, deepseek-3.2_4needle=0.727447|n=20"
-"[7000, 8000)","deepseek-3.1_2needle=0.874315|n=15, deepseek-3.1_4needle=0.534969|n=26, deepseek-3.2_2needle=0.750187|n=15, deepseek-3.2_4needle=0.532588|n=26"
-"[10000, 20000)","deepseek-3.1_2needle=0.792059|n=97, deepseek-3.1_4needle=0.588909|n=107, deepseek-3.2_2needle=0.737516|n=97, deepseek-3.2_4needle=0.521210|n=107"
-"[30000, 40000)","deepseek-3.1_2needle=0.726804|n=35, deepseek-3.1_4needle=0.460874|n=32, deepseek-3.2_2needle=0.674262|n=35, deepseek-3.2_4needle=0.508214|n=32"
-"[50000, 60000)","deepseek-3.1_2needle=0.596610|n=35, deepseek-3.1_4needle=0.394156|n=34, deepseek-3.2_2needle=0.523384|n=35, deepseek-3.2_4needle=0.511314|n=34"
-"[100000, 115200.0)","deepseek-3.1_2needle=0.618804|n=22, deepseek-3.1_4needle=0.380437|n=13, deepseek-3.2_2needle=0.540180|n=22, deepseek-3.2_4needle=0.375465|n=13"
+"[4000, 5000)","deepseek-3.1_2needle=0.992393|n=24, deepseek-3.1_4needle=0.751547|n=20, deepseek-3.2_2needle=0.870218|n=24, deepseek-3.2_4needle=0.727447|n=20, qwen3-30b-a3b-instruct-2507_2needle=0.493615|n=24, qwen3-next-80b-a3b-instruct_2needle=0.492729|n=24"
+"[7000, 8000)","deepseek-3.1_2needle=0.874315|n=15, deepseek-3.1_4needle=0.534969|n=26, deepseek-3.2_2needle=0.750187|n=15, deepseek-3.2_4needle=0.532588|n=26, qwen3-30b-a3b-instruct-2507_2needle=0.323748|n=15, qwen3-next-80b-a3b-instruct_2needle=0.323875|n=15"
+"[10000, 15000)","deepseek-3.1_2needle=0.848061|n=67, deepseek-3.1_4needle=0.588383|n=64, deepseek-3.2_2needle=0.767053|n=67, deepseek-3.2_4needle=0.514782|n=64, qwen3-30b-a3b-instruct-2507_2needle=0.587933|n=67, qwen3-next-80b-a3b-instruct_2needle=0.601422|n=67"
+"[30000, 35000)","deepseek-3.1_2needle=0.756514|n=19, deepseek-3.1_4needle=0.407183|n=20, deepseek-3.2_2needle=0.751729|n=19, deepseek-3.2_4needle=0.543897|n=20, qwen3-30b-a3b-instruct-2507_2needle=0.531141|n=19, qwen3-next-80b-a3b-instruct_2needle=0.623625|n=19"
+"[60000, 65000)","deepseek-3.1_2needle=0.494080|n=9, deepseek-3.1_4needle=0.394818|n=11, deepseek-3.2_2needle=0.566757|n=9, deepseek-3.2_4needle=0.391249|n=11, qwen3-30b-a3b-instruct-2507_2needle=0.306687|n=9, qwen3-next-80b-a3b-instruct_2needle=0.437102|n=9"
+"[100000, 115200.0)","deepseek-3.1_2needle=0.618804|n=22, deepseek-3.1_4needle=0.380437|n=13, deepseek-3.2_2needle=0.540180|n=22, deepseek-3.2_4needle=0.375465|n=13, qwen3-30b-a3b-instruct-2507_2needle=0.570905|n=22, qwen3-next-80b-a3b-instruct_2needle=0.476207|n=22"

@@ -11,18 +11,17 @@ import asyncio
 import csv
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 MAX_CONTEXT_WINDOW = int(128000 * 0.9)
-MODEL= "qwen3-next-80b-a3b-instruct"
-needle="4needle"
-CONCURRENCY = 5
+MODEL= "qwen3-30b-a3b-instruct-2507"
+needle="2needle"
+CONCURRENCY = 3
 SAMPLES = 3
 
 parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
 dataset = pd.read_parquet(parquet_path)
-api_key = os.environ.get('DASHSCOPE_API_KEY') 
-client = AsyncOpenAI(api_key=api_key, base_url=os.environ.get('qwen'))
+client = AsyncOpenAI(api_key= os.environ.get('DASHSCOPE_API_KEY') , base_url=os.environ.get("qwen"))
 enc = tiktoken.get_encoding("o200k_base")
 
 def grade(response, answer, random_string_to_prepend) -> float:
@@ -43,17 +42,16 @@ def n_tokens(messages : list[dict]) -> int:
 
 # Prepare CSV filename early and handle header
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-n_needle = needle
 
 # Ensure output directory exists and set CSV path to result/
 result_dir = Path("result")
 result_dir.mkdir(parents=True, exist_ok=True)
-csv_filename = result_dir / f"{MODEL}_{n_needle}_{timestamp}.csv"
+csv_filename = result_dir / f"{MODEL}_{needle}_{timestamp}.csv"
 
 # Ensure logs directory exists and set JSON log path
 logs_dir = Path("logs")
 logs_dir.mkdir(parents=True, exist_ok=True)
-json_log_filename = logs_dir / f"{MODEL}_{n_needle}_{timestamp}.json"
+json_log_filename = logs_dir / f"{MODEL}_{needle}_{timestamp}.json"
 
 
 async def csv_writer(queue: asyncio.Queue, filename: str):
@@ -120,10 +118,11 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
                         "grade": g,
                     })
                     break
-                except Exception:
+                except Exception as e:
                     if attempt == retries - 1:
-                        # give up this sample, proceed to next
-                        break
+                        # Final attempt failed: print raw exception (original response) and terminate
+                        print(f"[FATAL] API call failed after all retries for row={idx}. LLM output: {e}", flush=True)
+                        raise SystemExit(1)
                     await asyncio.sleep(delay)
                     delay *= 2
 
