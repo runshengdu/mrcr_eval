@@ -10,9 +10,14 @@ MAX_TOKEN = 128000*0.9
 bins = [
     (START_TOKEN, 5000),
     (8000,9000),
-    (16000, 17000),
-    (32000, 40000),
-    (64000, 70000),
+    (10000, 12000),
+    (20000, 22000),
+    (30000, 35000),
+    (40000, 45000),
+    (50000, 55000),
+    (60000, 65000),
+    (70000, 75000),
+    (80000, 85000),
     (100000, MAX_TOKEN),
 ]
 
@@ -47,9 +52,11 @@ def main():
     if not results_dir.exists():
         raise FileNotFoundError("'result' directory not found")
 
-    files = sorted(results_dir.glob('*.csv'))
+    all_files = sorted(results_dir.glob('*.csv'))
+    # 仅选择文件名包含 ds-3.1 或 ds-3.2 的 CSV 文件
+    files = [f for f in all_files if ("ds-3.1" in f.name or "ds-3.2" in f.name)]
     if not files:
-        raise FileNotFoundError("No CSV files found in 'result' directory")
+        raise FileNotFoundError("未在 'result' 目录中找到包含 ds-3.1 或 ds-3.2 的 CSV 文件")
 
     # Use manually defined bins
     # bins = build_bins(START_TOKEN, BIN_WIDTH, MAX_TOKEN)

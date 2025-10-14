@@ -15,10 +15,11 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 MAX_CONTEXT_WINDOW = int(128000 * 0.9)
-MODEL = "qwen3-30b-a3b-instruct-2507"
+MODEL = "qwen3-next-80b-a3b-instruct"
 needle = "2needle"
-CONCURRENCY = 6
+CONCURRENCY = 3
 SAMPLES = 3
+MAX_RETRIES = 3
 
 parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
 dataset = pd.read_parquet(parquet_path)
@@ -71,9 +72,11 @@ async def csv_writer(queue: asyncio.Queue, filename: str):
             writer.writerow(item)
         queue.task_done()
 
-async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Queue, lock: asyncio.Lock, counter: dict, client_api: AsyncOpenAI = None, model_name: str = None, resume_mode: bool = False):
-    """Unified row processing for both fresh-run and resume modes.
-    Simplified logic: check API status code first; handle non-200 based on mode.
+async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Queue, lock: asyncio.Lock, counter: dict, client_api: AsyncOpenAI = None, model_name: str = None, resume_mode: bool = False, samples: int = SAMPLES):
+    """Process a single dataset row with sampling and retries.
+    - For each row, call the API `samples` times and average the grade.
+    - Each API call has up to MAX_RETRIES attempts.
+    - If a sample fails all retries: non-resume mode aborts; resume mode asks whether to skip the row.
     """
     messages = json.loads(row["prompt"])
     token_count = n_tokens(messages)
@@ -84,63 +87,60 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
     model = model_name if model_name is not None else MODEL
 
     async with semaphore:
-        try:
-            completion = await api_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                timeout=30.0
-            )
-            status_code = getattr(completion, "status_code", 200)
-            if status_code != 200:
-                err_msg = f"status_code={status_code}, raw={completion}"
-                if not resume_mode:
-                    async with lock:
-                        print(f"[ERROR] row={idx} API返回非200：{err_msg}", flush=True)
-                    raise RuntimeError(f"API返回非200：{err_msg}")
-                else:
-                    async with lock:
-                        print(f"[WARN] row={idx} API返回非200：{err_msg}", flush=True)
-                        choice = input("返回不是200，要跳过该行吗？(y/n): ").strip().lower()
-                    if choice.startswith("y"):
+        grades: list[float] = []
+        for s in range(samples):
+            last_err_msg = None
+            # retry up to MAX_RETRIES for this sample
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    completion = await api_client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        timeout=30.0
+                    )
+                    status_code = getattr(completion, "status_code", 200)
+                    if status_code != 200:
+                        last_err_msg = f"status_code={status_code}, raw={completion}"
+                        continue
+
+                    response = completion.choices[0].message.content
+                    g = grade(response, row["answer"], row["random_string_to_prepend"]) 
+                    grades.append(float(g))
+                    break
+                except Exception as e:
+                    status_code = getattr(e, "status_code", None) or getattr(e, "http_status", None) or "unknown"
+                    last_err_msg = f"status={status_code}, error={e}"
+                    continue
+
+            # after retries, if this sample didn't succeed
+            if len(grades) <= s:
+                async with lock:
+                    print(f"[ERROR] row={idx} sample={s+1}/{samples} failed after {MAX_RETRIES} retries: {last_err_msg}", flush=True)
+                    if resume_mode:
+                        choice = input("该题在所有重试后仍失败，是否跳过该行？(y/n): ").strip().lower()
+                    else:
+                        choice = None
+                if resume_mode:
+                    if choice and choice.startswith("y"):
                         async with lock:
                             print(f"[SKIP] row={idx} 用户选择跳过该行。", flush=True)
                         return
                     else:
-                        raise RuntimeError(f"用户选择不跳过，终止。详情：{err_msg}")
-
-            response = completion.choices[0].message.content
-            g = grade(response, row["answer"], row["random_string_to_prepend"])    
-            avg_g = float(g)
-
-        except Exception as e:
-            # 异常视为非200，根据模式处理
-            status_code = getattr(e, "status_code", None) or getattr(e, "http_status", None) or "unknown"
-            err_msg = str(e)
-            if not resume_mode:
-                async with lock:
-                    print(f"[ERROR] row={idx} API异常(视为非200)：status={status_code}, 错误：{err_msg}", flush=True)
-                raise
-            else:
-                async with lock:
-                    print(f"[WARN] row={idx} API异常(视为非200)：status={status_code}, 错误：{err_msg}", flush=True)
-                    choice = input("返回不是200，要跳过该行吗？(y/n): ").strip().lower()
-                if choice.startswith("y"):
-                    async with lock:
-                        print(f"[SKIP] row={idx} 用户选择跳过该行。", flush=True)
-                    return
+                        raise RuntimeError(f"row={idx} failed after retries: {last_err_msg}")
                 else:
-                    raise
+                    raise RuntimeError(f"row={idx} failed after retries: {last_err_msg}")
 
+        avg_g = sum(grades) / len(grades) if grades else 0.0
         async with lock:
             counter["count"] += 1
-            print(f"row={idx} processed={counter['count']} avg_grade={avg_g:.6f} tokens={token_count}", flush=True)
+            print(f"row={idx} processed={counter['count']} samples={samples} avg_grade={avg_g:.6f} tokens={token_count}", flush=True)
         await queue.put({
             "grade": avg_g,
             "token_count": token_count,
             "row": idx,
         })
 
-async def run_parallel():
+async def run_parallel(samples: int):
     semaphore = asyncio.Semaphore(CONCURRENCY)
     queue = asyncio.Queue()
     lock = asyncio.Lock()
@@ -154,7 +154,7 @@ async def run_parallel():
 
     tasks = []
     for idx, row in dataset.iterrows():
-        tasks.append(asyncio.create_task(process_row(idx, row, semaphore, queue, lock, counter)))
+        tasks.append(asyncio.create_task(process_row(idx, row, semaphore, queue, lock, counter, resume_mode=False, samples=samples)))
 
     await asyncio.gather(*tasks)
     await queue.put(None)
@@ -163,7 +163,7 @@ async def run_parallel():
 
 
 # Resume logic: read latest CSV, continue untested rows, and append results
-async def run_resume():
+async def run_resume(samples: int):
     result_dir = Path("result")
     result_dir.mkdir(parents=True, exist_ok=True)
     latest = find_latest_csv(result_dir)
@@ -199,7 +199,7 @@ async def run_resume():
         if idx in tested_rows:
             continue
         pending_count += 1
-        tasks.append(asyncio.create_task(process_row(idx, row, semaphore, queue, lock, counter, client_resume, None, True)))
+        tasks.append(asyncio.create_task(process_row(idx, row, semaphore, queue, lock, counter, client_resume, None, True, samples)))
 
     if not tasks:
         print("CSV 已包含所有行的测试结果，无需续测。")
@@ -216,10 +216,13 @@ async def run_resume():
     print(f"续测完成，结果已追加到 {latest}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="MRCR 测试与续测")
-    parser.add_argument("--resume", action="store_true", default=False, help="是否进行续测（从最新CSV继续）")
+    parser = argparse.ArgumentParser(description="MRCR testing and resume")
+    parser.add_argument("--resume", type=str.lower, choices=["true", "false"], default="false", help="Resume from latest CSV (true/false)")
+    parser.add_argument("--samples", type=int, default=SAMPLES, help="Number of samples per question")
     args = parser.parse_args()
-    if args.resume:
-        asyncio.run(run_resume())
+    resume_mode = args.resume == "true"
+    samples = max(1, args.samples)
+    if resume_mode:
+        asyncio.run(run_resume(samples))
     else:
-        asyncio.run(run_parallel())
+        asyncio.run(run_parallel(samples))
