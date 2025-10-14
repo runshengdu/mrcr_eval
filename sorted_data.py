@@ -2,16 +2,17 @@ import pandas as pd
 from pathlib import Path
 import os
 import re
+import matplotlib.pyplot as plt
 
 START_TOKEN = 4000
 MAX_TOKEN = 128000*0.9
 
 bins = [
     (START_TOKEN, 5000),
-    (7000, 8000),
-    (10000, 15000),
-    (30000, 35000),
-    (60000, 65000),
+    (8000,9000),
+    (16000, 17000),
+    (32000, 40000),
+    (64000, 70000),
     (100000, MAX_TOKEN),
 ]
 
@@ -50,7 +51,7 @@ def main():
     if not files:
         raise FileNotFoundError("No CSV files found in 'result' directory")
 
-    # 使用手动创建的 bins
+    # Use manually defined bins
     # bins = build_bins(START_TOKEN, BIN_WIDTH, MAX_TOKEN)
     per_model = {}
     for f in files:
@@ -83,7 +84,31 @@ def main():
     out_path = out_dir / 'accuracy.csv'
     out_df.to_csv(out_path, index=False)
     print(f"Saved results to {out_path}")
-    # Plotting moved to plot_mrcr_results.py
+
+    # Plot line chart directly from per_model and bins
+    x_positions_plot = [start for (start, end) in bins]
+    x_labels_plot = [f"[{start}, {end})" for (start, end) in bins]
+
+    plt.figure(figsize=(20, 10))
+    for model in sorted(per_model.keys()):
+        ys_plot = [per_model[model].get((start, end), {'avg': 0.0})['avg'] for (start, end) in bins]
+        plt.plot(x_positions_plot, ys_plot, marker="o", linewidth=1.5, label=model)
+
+    plt.title("MRCR Average Grade by Token Bins")
+    plt.xlabel("Token Bin")
+    plt.ylabel("Average grade")
+    plt.xticks(x_positions_plot, x_labels_plot, rotation=45, ha="right")
+    plt.ylim(0.0, 1.0)
+    plt.yticks([i / 20 for i in range(0, 21)])
+    plt.grid(True, linestyle="--", alpha=0.4)
+    plt.legend()
+
+    out_dir = Path("sorted_data")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = out_dir / "accuracy.png"
+    plt.tight_layout()
+    plt.savefig(fig_path)
+    print(f"Saved line chart to {fig_path}")
 
 if __name__ == '__main__':
     main()
