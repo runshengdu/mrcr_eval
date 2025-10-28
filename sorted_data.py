@@ -54,7 +54,7 @@ def main():
 
     all_files = sorted(results_dir.glob('*.csv'))
     # 仅选择文件名包含 ds-3.1 或 ds-3.2 的 CSV 文件
-    files = [f for f in all_files if ("ds-3.1" in f.name or "ds-3.2" in f.name)]
+    files = [f for f in all_files if ("ds-3.1" in f.name or "ds-3.2" in f.name or "minimax" in f.name)]
     if not files:
         raise FileNotFoundError("未在 'result' 目录中找到包含 ds-3.1 或 ds-3.2 的 CSV 文件")
 

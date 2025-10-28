@@ -11,30 +11,40 @@ from pathlib import Path
 import asyncio
 import csv
 from dotenv import load_dotenv
+import re
 
-load_dotenv(override=True)
+load_dotenv()
 
-MAX_CONTEXT_WINDOW = int(128000 * 0.9)
-MODEL = "qwen3-next-80b-a3b-instruct"
+MAX_CONTEXT_WINDOW = int(200000 * 0.75)
+MODEL = "minimax/minimax-m2:free"
 needle = "2needle"
-CONCURRENCY = 3
+CONCURRENCY = 6
 SAMPLES = 3
 MAX_RETRIES = 3
 
 parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
 dataset = pd.read_parquet(parquet_path)
-client = AsyncOpenAI(api_key=os.environ.get('DASHSCOPE_API_KEY'), base_url=os.environ.get("qwen"))
+client = AsyncOpenAI(api_key=os.environ.get('OPENROUTER_API_KEY'), base_url=os.environ.get("minimax"))
 enc = tiktoken.get_encoding("o200k_base")
 
 def grade(response, answer, random_string_to_prepend) -> float:
     """
-    Compare response and answer.
+    Compare response and answer with strict prefix enforcement.
     """
-    if not response.startswith(random_string_to_prepend):
-        return 0
-    response = response.removeprefix(random_string_to_prepend)
-    answer = answer.removeprefix(random_string_to_prepend)
-    return float(SequenceMatcher(None, response, answer).ratio())
+    # Strip think tags from response before prefix check
+    response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
+
+    # Normalize leading BOM/zero-width/whitespace before prefix check
+    def normalize_leading(s: str) -> str:
+        return re.sub(r"^[\ufeff\u200b\u200c\u200d\s]+", "", s.replace("\r\n", "\n"))
+
+    response_norm = normalize_leading(response)
+    if not response_norm.startswith(random_string_to_prepend):
+        return 0.0
+
+    response_body = response_norm.removeprefix(random_string_to_prepend).strip()
+    answer_body = normalize_leading(answer).removeprefix(random_string_to_prepend).strip()
+    return float(SequenceMatcher(None, response_body, answer_body).ratio())
 
 def n_tokens(messages: list[dict]) -> int:
     """
@@ -149,7 +159,14 @@ async def run_parallel(samples: int):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = Path("result")
     result_dir.mkdir(parents=True, exist_ok=True)
-    csv_filename = result_dir / f"{MODEL}_{needle}_{timestamp}.csv"
+    def _safe_component(s: str) -> str:
+        # Replace path separators and illegal filename characters with '_'
+        # Covers '/', '\\', ':', '*', '?', '"', '<', '>', '|'
+        return re.sub(r"[\\/:*?\"<>|]+", "_", s)
+
+    safe_model = _safe_component(MODEL)
+    safe_needle = _safe_component(needle)
+    csv_filename = result_dir / f"{safe_model}_{safe_needle}_{timestamp}.csv"
     writer_task = asyncio.create_task(csv_writer(queue, csv_filename))
 
     tasks = []
