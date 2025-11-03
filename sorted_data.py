@@ -5,21 +5,9 @@ import re
 import matplotlib.pyplot as plt
 
 START_TOKEN = 4000
-MAX_TOKEN = 128000*0.9
+MAX_TOKEN = int(128000*0.9)
 
-bins = [
-    (START_TOKEN, 5000),
-    (8000,9000),
-    (10000, 12000),
-    (20000, 22000),
-    (30000, 35000),
-    (40000, 45000),
-    (50000, 55000),
-    (60000, 65000),
-    (70000, 75000),
-    (80000, 85000),
-    (100000, MAX_TOKEN),
-]
+bins = [5000,8000,10000,20000,30000,40000,50000,60000,70000,80000,90000,100000,MAX_TOKEN]
 
 def extract_model_name(filename: str) -> str:
     base = os.path.basename(filename)
@@ -28,20 +16,20 @@ def extract_model_name(filename: str) -> str:
         raise ValueError(f"Cannot extract model name from filename: {filename}")
     return m.group(1)
 
-def accuracy_by_bins(df: pd.DataFrame, bins: list[tuple[int, int]]):
+def accuracy_by_bins(df: pd.DataFrame, bins: list[int]):
     if 'grade' not in df.columns or 'token_count' not in df.columns:
         raise ValueError("CSV must contain 'grade' and 'token_count' columns")
     df = df.copy()
     df['grade'] = pd.to_numeric(df['grade'], errors='coerce')
     df['token_count'] = pd.to_numeric(df['token_count'], errors='coerce')
-    df = df[(df['token_count'] >= START_TOKEN) & (df['token_count'] < MAX_TOKEN)]
+    # 累积阈值统计：对每个阈值 t 计算 token_count < t 的平均分
     out = {}
-    for start, end in bins:
-        bin_df = df[(df['token_count'] >= start) & (df['token_count'] < end)]
-        total = len(bin_df)
-        sum_grade = float(bin_df['grade'].sum())
+    for t in bins:
+        thresh_df = df[df['token_count'] < t]
+        total = len(thresh_df)
+        sum_grade = float(thresh_df['grade'].sum())
         avg = (sum_grade / total) if total > 0 else 0.0
-        out[(start, end)] = {
+        out[t] = {
             'avg': avg,
             'count': int(total)
         }
@@ -53,10 +41,9 @@ def main():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    # 仅选择文件名包含 ds-3.1 或 ds-3.2 的 CSV 文件
     files = [f for f in all_files if ("ds-3.1" in f.name or "ds-3.2" in f.name or "minimax" in f.name)]
     if not files:
-        raise FileNotFoundError("未在 'result' 目录中找到包含 ds-3.1 或 ds-3.2 的 CSV 文件")
+        raise FileNotFoundError("没找到对应的文件")
 
     # Use manually defined bins
     # bins = build_bins(START_TOKEN, BIN_WIDTH, MAX_TOKEN)
@@ -69,13 +56,14 @@ def main():
         except ValueError as e:
             print(f"Skip {f}: {e}")
 
-    # Compose compact output: two columns [bin_label, model_accuracies_with_counts]
+    # Compose compact output: 累积阈值标签，例如 <5000、<8000、…、<MAX_TOKEN
+    thresholds = bins
     rows = []
-    for start, end in bins:
-        label = f"[{start}, {end})"
+    for t in thresholds:
+        label = f"<{t}"
         pairs = []
         for model in sorted(per_model.keys()):
-            metric = per_model[model].get((start, end), {'avg': 0.0, 'count': 0})
+            metric = per_model[model].get(t, {'avg': 0.0, 'count': 0})
             acc = metric['avg']
             n = metric['count']
             pairs.append(f"{model}={acc:.6f}|n={n}")
@@ -92,13 +80,13 @@ def main():
     out_df.to_csv(out_path, index=False)
     print(f"Saved results to {out_path}")
 
-    # Plot line chart directly from per_model and bins
-    x_positions_plot = [start for (start, end) in bins]
-    x_labels_plot = [f"[{start}, {end})" for (start, end) in bins]
+    # Plot line chart directly from per_model and thresholds（累积 <t）
+    x_positions_plot = [t for t in thresholds]
+    x_labels_plot = [f"<{t}" for t in thresholds]
 
     plt.figure(figsize=(20, 10))
     for model in sorted(per_model.keys()):
-        ys_plot = [per_model[model].get((start, end), {'avg': 0.0})['avg'] for (start, end) in bins]
+        ys_plot = [per_model[model].get(t, {'avg': 0.0})['avg'] for t in thresholds]
         plt.plot(x_positions_plot, ys_plot, marker="o", linewidth=1.5, label=model)
 
     plt.title("MRCR Average Grade by Token Bins")
