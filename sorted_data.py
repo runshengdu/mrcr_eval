@@ -5,9 +5,9 @@ import re
 import matplotlib.pyplot as plt
 
 START_TOKEN = 4000
-MAX_TOKEN = int(128000*0.9)
+MAX_TOKEN = int(128000)
 
-bins = [5000,8000,10000,20000,30000,40000,50000,60000,70000,80000,90000,100000,MAX_TOKEN]
+bins = [5000,10000,20000,40000,60000,80000,100000,MAX_TOKEN]
 
 def extract_model_name(filename: str) -> str:
     base = os.path.basename(filename)
@@ -41,7 +41,7 @@ def main():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    files = [f for f in all_files if ("ds-3.1" in f.name or "ds-3.2" in f.name or "minimax" in f.name)]
+    files = [f for f in all_files if ("ds" in f.name or "kimi" in f.name or "minimax" in f.name or "qwen" in f.name)]
     if not files:
         raise FileNotFoundError("没找到对应的文件")
 
@@ -82,15 +82,15 @@ def main():
 
     # Plot line chart directly from per_model and thresholds（累积 <t）
     x_positions_plot = [t for t in thresholds]
-    x_labels_plot = [f"<{t}" for t in thresholds]
+    x_labels_plot = [f"{t}" for t in thresholds]
 
-    plt.figure(figsize=(20, 10))
+    plt.figure(figsize=(10, 7))
     for model in sorted(per_model.keys()):
         ys_plot = [per_model[model].get(t, {'avg': 0.0})['avg'] for t in thresholds]
         plt.plot(x_positions_plot, ys_plot, marker="o", linewidth=1.5, label=model)
 
-    plt.title("MRCR Average Grade by Token Bins")
-    plt.xlabel("Token Bin")
+    plt.title("OpenAI MRCR Grade")
+    plt.xlabel("Max token")
     plt.ylabel("Average grade")
     plt.xticks(x_positions_plot, x_labels_plot, rotation=45, ha="right")
     plt.ylim(0.0, 1.0)

@@ -15,11 +15,11 @@ import re
 
 load_dotenv()
 
-MAX_CONTEXT_WINDOW = int(200000 * 0.75)
-MODEL = "minimax/minimax-m2:free"
+MAX_CONTEXT_WINDOW = int(200000 * 0.85)
+MODEL = "moonshotai/kimi-linear-48b-a3b-instruct"
 needle = "2needle"
 CONCURRENCY = 6
-SAMPLES = 3
+SAMPLES = 1
 MAX_RETRIES = 3
 
 parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
