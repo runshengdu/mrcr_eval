@@ -41,7 +41,8 @@ def main():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    files = [f for f in all_files if ("ds" in f.name or "kimi" in f.name or "minimax" in f.name or "qwen" in f.name)]
+    keywords = ["kimi-linear", "ds-3.2-thinking","ds-3.1-thinking","gemini-3","gpt-5"]
+    files = [f for f in all_files if any(kw in f.name for kw in keywords)]
     if not files:
         raise FileNotFoundError("没找到对应的文件")
 
@@ -76,7 +77,7 @@ def main():
 
     out_dir = Path('sorted_data')
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / 'accuracy.csv'
+    out_path = out_dir / 'accuracy_other_test.csv'
     out_df.to_csv(out_path, index=False)
     print(f"Saved results to {out_path}")
 
@@ -89,7 +90,7 @@ def main():
         ys_plot = [per_model[model].get(t, {'avg': 0.0})['avg'] for t in thresholds]
         plt.plot(x_positions_plot, ys_plot, marker="o", linewidth=1.5, label=model)
 
-    plt.title("OpenAI MRCR Grade")
+    plt.title("OpenAI MRCR 2 needle")
     plt.xlabel("Max token")
     plt.ylabel("Average grade")
     plt.xticks(x_positions_plot, x_labels_plot, rotation=45, ha="right")
@@ -100,7 +101,7 @@ def main():
 
     out_dir = Path("sorted_data")
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig_path = out_dir / "accuracy.png"
+    fig_path = out_dir / "accuracy_other_test.png"
     plt.tight_layout()
     plt.savefig(fig_path)
     print(f"Saved line chart to {fig_path}")
