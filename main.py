@@ -15,16 +15,17 @@ import re
 
 load_dotenv()
 
-MAX_CONTEXT_WINDOW = int(200000 * 0.85)
-MODEL = "moonshotai/kimi-linear-48b-a3b-instruct"
+MAX_CONTEXT_WINDOW = int(200000 * 0.80)
+MODEL = "glm-4.6"
 needle = "2needle"
-CONCURRENCY = 6
+CONCURRENCY = 3
 SAMPLES = 1
-MAX_RETRIES = 3
+MAX_RETRIES = 1
+REQUEST_DELAY_SECONDS = 5
 
 parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
 dataset = pd.read_parquet(parquet_path)
-client = AsyncOpenAI(api_key=os.environ.get('OPENROUTER_API_KEY'), base_url=os.environ.get("minimax"))
+client = AsyncOpenAI(api_key=os.environ.get("DASHSCOPE_API_KEY"), base_url=os.environ.get("dashscope"))
 enc = tiktoken.get_encoding("o200k_base")
 
 def grade(response, answer, random_string_to_prepend) -> float:
@@ -63,8 +64,8 @@ def parse_model_and_needle(filename: str) -> tuple[str, str]:
     name = Path(filename).name.replace(".csv", "")
     parts = name.split("_")
     if len(parts) >= 2:
-        return parts[0], parts[1]
-    return MODEL, needle
+        return parts[0]
+    return MODEL
 
 async def csv_writer(queue: asyncio.Queue, filename: str):
     header_written = os.path.exists(filename)
@@ -77,7 +78,7 @@ async def csv_writer(queue: asyncio.Queue, filename: str):
         with open(filename, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             if not header_written:
-                writer.writeheader()
+                writer.writeheader() 
                 header_written = True
             writer.writerow(item)
         queue.task_done()
@@ -103,17 +104,24 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
             # retry up to MAX_RETRIES for this sample
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
-                    completion = await api_client.chat.completions.create(
+                    await asyncio.sleep(REQUEST_DELAY_SECONDS)
+                    stream = await api_client.chat.completions.create(
                         model=model,
                         messages=messages,
-                        timeout=30.0
+                        timeout=30.0,
+                        extra_body={"enable_thinking": True},
+                        stream=True,
                     )
-                    status_code = getattr(completion, "status_code", 200)
-                    if status_code != 200:
-                        last_err_msg = f"status_code={status_code}, raw={completion}"
-                        continue
+                    chunks: list[str] = []
+                    async for chunk in stream:
+                        # OpenAI-compatible streaming: each chunk has choices[0].delta.content
+                        choice = chunk.choices[0]
+                        delta = getattr(choice, "delta", None)
+                        content = getattr(delta, "content", None) if delta is not None else None
+                        if content:
+                            chunks.append(content)
 
-                    response = completion.choices[0].message.content
+                    response = "".join(chunks)
                     g = grade(response, row["answer"], row["random_string_to_prepend"]) 
                     grades.append(float(g))
                     break
@@ -139,7 +147,6 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
                         raise RuntimeError(f"row={idx} failed after retries: {last_err_msg}")
                 else:
                     raise RuntimeError(f"row={idx} failed after retries: {last_err_msg}")
-
         avg_g = sum(grades) / len(grades) if grades else 0.0
         async with lock:
             counter["count"] += 1
@@ -187,10 +194,10 @@ async def run_resume(samples: int):
     if latest is None:
         raise FileNotFoundError(f"未找到结果CSV文件，请先运行新测生成：{result_dir}")
 
-    model_resume, needle_resume = parse_model_and_needle(latest.name)
-    print(f"继续测试：文件={latest.name} 模型={model_resume} 数据集={needle_resume}")
+    model_resume = parse_model_and_needle(latest.name)
+    print(f"继续测试：文件={latest.name} 模型={model_resume} 数据集={needle}")
 
-    parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle_resume}.parquet", repo_type="dataset")
+    parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
     dataset_resume = pd.read_parquet(parquet_path)
 
     tested_rows = set()

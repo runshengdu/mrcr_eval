@@ -3,20 +3,24 @@ from pathlib import Path
 import os
 import re
 import matplotlib.pyplot as plt
+from datetime import datetime
+import random
 
-START_TOKEN = 4000
+time=datetime.now().strftime("%Y%m%d")
+random_num = random.randint(100, 999)
 MAX_TOKEN = int(128000)
 
-bins = [5000,10000,20000,40000,60000,80000,100000,MAX_TOKEN]
+thresholds = [5000,10000,20000,40000,60000,80000,100000,MAX_TOKEN]
 
 def extract_model_name(filename: str) -> str:
     base = os.path.basename(filename)
-    m = re.match(r"^([^_]+_[^_]+)", base)
+    m = re.match(r"^(.+)(?=_[^_]+_[^_]+$)", base)
+
     if not m:
         raise ValueError(f"Cannot extract model name from filename: {filename}")
     return m.group(1)
 
-def accuracy_by_bins(df: pd.DataFrame, bins: list[int]):
+def accuracy_by_threshold(df: pd.DataFrame, thresholds: list[int]):
     if 'grade' not in df.columns or 'token_count' not in df.columns:
         raise ValueError("CSV must contain 'grade' and 'token_count' columns")
     df = df.copy()
@@ -24,7 +28,7 @@ def accuracy_by_bins(df: pd.DataFrame, bins: list[int]):
     df['token_count'] = pd.to_numeric(df['token_count'], errors='coerce')
     # 累积阈值统计：对每个阈值 t 计算 token_count < t 的平均分
     out = {}
-    for t in bins:
+    for t in thresholds:
         thresh_df = df[df['token_count'] < t]
         total = len(thresh_df)
         sum_grade = float(thresh_df['grade'].sum())
@@ -41,24 +45,22 @@ def main():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    keywords = ["kimi-linear", "ds-3.2-thinking","ds-3.1-thinking","gemini-3","gpt-5"]
+    keywords = ["claude","glm-4.6","gpt-5","gemini-3","ds-3.2-thinking","minimax-m2","kimi-k2"]
     files = [f for f in all_files if any(kw in f.name for kw in keywords)]
     if not files:
         raise FileNotFoundError("没找到对应的文件")
 
     # Use manually defined bins
-    # bins = build_bins(START_TOKEN, BIN_WIDTH, MAX_TOKEN)
     per_model = {}
     for f in files:
         model = extract_model_name(f.name)
         df = pd.read_csv(f)
         try:
-            per_model[model] = accuracy_by_bins(df, bins)
+            per_model[model] = accuracy_by_threshold(df, thresholds)
         except ValueError as e:
             print(f"Skip {f}: {e}")
 
     # Compose compact output: 累积阈值标签，例如 <5000、<8000、…、<MAX_TOKEN
-    thresholds = bins
     rows = []
     for t in thresholds:
         label = f"<{t}"
@@ -77,7 +79,7 @@ def main():
 
     out_dir = Path('sorted_data')
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / 'accuracy_other_test.csv'
+    out_path = out_dir / f'test_result_{time}_{random_num}.csv'
     out_df.to_csv(out_path, index=False)
     print(f"Saved results to {out_path}")
 
@@ -101,7 +103,7 @@ def main():
 
     out_dir = Path("sorted_data")
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig_path = out_dir / "accuracy_other_test.png"
+    fig_path = out_dir / f'test_result_{time}_{random_num}.png'
     plt.tight_layout()
     plt.savefig(fig_path)
     print(f"Saved line chart to {fig_path}")
