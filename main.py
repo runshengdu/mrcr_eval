@@ -15,17 +15,17 @@ import re
 
 load_dotenv()
 
-MAX_CONTEXT_WINDOW = int(200000 * 0.80)
-MODEL = "glm-4.6"
+MAX_CONTEXT_WINDOW = int(128000 * 0.85)
+MODEL = "deepseek-chat"
 needle = "2needle"
-CONCURRENCY = 3
+CONCURRENCY = 20
 SAMPLES = 1
-MAX_RETRIES = 1
-REQUEST_DELAY_SECONDS = 5
+MAX_RETRIES = 3
+REQUEST_DELAY_SECONDS = 0
 
 parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
 dataset = pd.read_parquet(parquet_path)
-client = AsyncOpenAI(api_key=os.environ.get("DASHSCOPE_API_KEY"), base_url=os.environ.get("dashscope"))
+client = AsyncOpenAI(api_key=os.environ.get("DEEPSEEK_API_KEY"), base_url=os.environ.get("deepseek"))
 enc = tiktoken.get_encoding("o200k_base")
 
 def grade(response, answer, random_string_to_prepend) -> float:
@@ -173,7 +173,7 @@ async def run_parallel(samples: int):
 
     safe_model = _safe_component(MODEL)
     safe_needle = _safe_component(needle)
-    csv_filename = result_dir / f"{safe_model}_{safe_needle}_{timestamp}.csv"
+    csv_filename = result_dir / f"{safe_model}_{timestamp}.csv"
     writer_task = asyncio.create_task(csv_writer(queue, csv_filename))
 
     tasks = []
