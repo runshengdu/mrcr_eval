@@ -15,17 +15,31 @@ import re
 
 load_dotenv()
 
-MAX_CONTEXT_WINDOW = int(128000 * 0.85)
-MODEL = "deepseek-chat"
+MAX_CONTEXT_WINDOW = int(200000 * 0.85)
+MODEL = "google/gemini-3-flash-preview"
 needle = "2needle"
-CONCURRENCY = 20
+CONCURRENCY = 30
 SAMPLES = 1
 MAX_RETRIES = 3
 REQUEST_DELAY_SECONDS = 0
 
-parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
-dataset = pd.read_parquet(parquet_path)
-client = AsyncOpenAI(api_key=os.environ.get("DEEPSEEK_API_KEY"), base_url=os.environ.get("deepseek"))
+dataset = pd.concat([
+    pd.read_parquet(
+        hf_hub_download(
+            repo_id="openai/mrcr",
+            filename=f"{needle}/{needle}_0.parquet",
+            repo_type="dataset",
+        )
+    ),
+    pd.read_parquet(
+        hf_hub_download(
+            repo_id="openai/mrcr",
+            filename=f"{needle}/{needle}_1.parquet",
+            repo_type="dataset",
+        )
+    ),
+])
+client = AsyncOpenAI(api_key=os.environ.get("OPENROUTER_API_KEY"), base_url=os.environ.get("OPENROUTER"))
 enc = tiktoken.get_encoding("o200k_base")
 
 def grade(response, answer, random_string_to_prepend) -> float:
@@ -105,11 +119,14 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     await asyncio.sleep(REQUEST_DELAY_SECONDS)
+                    extra_body = {"enable_thinking": True}
+                    if model == "openai/gpt-5.2":
+                        extra_body["reasoning_effort"] = "high"
                     stream = await api_client.chat.completions.create(
                         model=model,
                         messages=messages,
                         timeout=30.0,
-                        extra_body={"enable_thinking": True},
+                        extra_body=extra_body,
                         stream=True,
                     )
                     chunks: list[str] = []
@@ -197,8 +214,22 @@ async def run_resume(samples: int):
     model_resume = parse_model_and_needle(latest.name)
     print(f"继续测试：文件={latest.name} 模型={model_resume} 数据集={needle}")
 
-    parquet_path = hf_hub_download(repo_id="openai/mrcr", filename=f"{needle}.parquet", repo_type="dataset")
-    dataset_resume = pd.read_parquet(parquet_path)
+    dataset_resume = pd.concat([
+        pd.read_parquet(
+            hf_hub_download(
+                repo_id="openai/mrcr",
+                filename=f"{needle}/{needle}_0.parquet",
+                repo_type="dataset",
+            )
+        ),
+        pd.read_parquet(
+            hf_hub_download(
+                repo_id="openai/mrcr",
+                filename=f"{needle}/{needle}_1.parquet",
+                repo_type="dataset",
+            )
+        ),
+    ])
 
     tested_rows = set()
     try:
