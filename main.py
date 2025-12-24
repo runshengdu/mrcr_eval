@@ -10,18 +10,119 @@ from datetime import datetime
 from pathlib import Path
 import asyncio
 import csv
-from dotenv import load_dotenv
 import re
+from typing import Any
+import yaml
 
-load_dotenv()
+_ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+
+def _expand_env_vars(value: Any) -> Any:
+    if isinstance(value, str):
+        def _repl(m: re.Match) -> str:
+            var_name = m.group(1)
+            env_val = os.environ.get(var_name)
+            if env_val is None:
+                raise KeyError(
+                    f"Environment variable '{var_name}' is required by models.yaml but is not set."
+                )
+            return env_val
+
+        return _ENV_VAR_PATTERN.sub(_repl, value)
+    if isinstance(value, list):
+        return [_expand_env_vars(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _expand_env_vars(v) for k, v in value.items()}
+    return value
+
+
+def load_model_config(model_name: str) -> dict[str, Any]:
+    config_path = Path(__file__).with_name("models.yaml")
+    if not config_path.exists():
+        raise FileNotFoundError(f"models.yaml not found at: {config_path}")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    if not isinstance(cfg, dict):
+        raise ValueError("models.yaml must be a mapping at the top level")
+
+    default_cfg = cfg.get("default") or {}
+    models_cfg = cfg.get("models") or []
+
+    if not isinstance(default_cfg, dict):
+        raise ValueError("models.yaml: 'default' must be a mapping")
+    if not isinstance(models_cfg, list):
+        raise ValueError("models.yaml: 'models' must be a list")
+
+    matched = None
+    available: list[str] = []
+    for m in models_cfg:
+        if isinstance(m, dict) and m.get("name"):
+            available.append(str(m.get("name")))
+        if isinstance(m, dict) and m.get("name") == model_name:
+            matched = m
+            break
+
+    if matched is None:
+        available_sorted = sorted(set(available))
+        raise ValueError(
+            "Model name not found in models.yaml: "
+            f"{model_name}. Available models: {available_sorted}"
+        )
+
+    merged: dict[str, Any] = dict(default_cfg)
+    merged.update(matched)
+    merged = _expand_env_vars(merged)
+
+    base_url = merged.get("base_url")
+    api_key = merged.get("api_key")
+    if not base_url or not api_key:
+        raise ValueError(
+            f"models.yaml config for model '{model_name}' must provide non-empty 'base_url' and 'api_key'"
+        )
+
+    return merged
+
+
+_CLIENT_CACHE: dict[tuple[str, str], AsyncOpenAI] = {}
+
+
+def get_client_for_model(model_name: str) -> AsyncOpenAI:
+    cfg = load_model_config(model_name)
+    cache_key = (str(cfg["base_url"]), str(cfg["api_key"]))
+    cached = _CLIENT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    new_client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
+    _CLIENT_CACHE[cache_key] = new_client
+    return new_client
+
+
+_CHAT_COMPLETION_CONFIG_KEYS = {
+    "temperature",
+    "max_tokens",
+    "extra_body",
+}
+
+
+def build_chat_completion_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    for k in _CHAT_COMPLETION_CONFIG_KEYS:
+        if k in model_cfg and model_cfg[k] is not None:
+            kwargs[k] = model_cfg[k]
+    return kwargs
 
 MAX_CONTEXT_WINDOW = int(200000 * 0.85)
-MODEL = "google/gemini-3-flash-preview"
+MODEL = "glm-4.7"
 needle = "2needle"
-CONCURRENCY = 30
+CONCURRENCY = 5
 SAMPLES = 1
 MAX_RETRIES = 3
 REQUEST_DELAY_SECONDS = 0
+
+MODEL_CONFIG = load_model_config(MODEL)
+client = AsyncOpenAI(api_key=MODEL_CONFIG["api_key"], base_url=MODEL_CONFIG["base_url"])
 
 dataset = pd.concat([
     pd.read_parquet(
@@ -39,16 +140,12 @@ dataset = pd.concat([
         )
     ),
 ])
-client = AsyncOpenAI(api_key=os.environ.get("OPENROUTER_API_KEY"), base_url=os.environ.get("OPENROUTER"))
 enc = tiktoken.get_encoding("o200k_base")
 
 def grade(response, answer, random_string_to_prepend) -> float:
     """
     Compare response and answer with strict prefix enforcement.
     """
-    # Strip think tags from response before prefix check
-    response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
-
     # Normalize leading BOM/zero-width/whitespace before prefix check
     def normalize_leading(s: str) -> str:
         return re.sub(r"^[\ufeff\u200b\u200c\u200d\s]+", "", s.replace("\r\n", "\n"))
@@ -110,6 +207,11 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
 
     api_client = client_api if client_api is not None else client
     model = model_name if model_name is not None else MODEL
+    model_cfg = MODEL_CONFIG if model == MODEL else load_model_config(model)
+    request_kwargs = build_chat_completion_kwargs(model_cfg)
+
+    if client_api is None and model != MODEL:
+        api_client = get_client_for_model(model)
 
     async with semaphore:
         grades: list[float] = []
@@ -119,14 +221,11 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     await asyncio.sleep(REQUEST_DELAY_SECONDS)
-                    extra_body = {"enable_thinking": True}
-                    if model == "openai/gpt-5.2":
-                        extra_body["reasoning_effort"] = "high"
                     stream = await api_client.chat.completions.create(
                         model=model,
                         messages=messages,
                         timeout=30.0,
-                        extra_body=extra_body,
+                        **request_kwargs,
                         stream=True,
                     )
                     chunks: list[str] = []
