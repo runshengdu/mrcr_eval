@@ -116,7 +116,7 @@ def build_chat_completion_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
 MAX_CONTEXT_WINDOW = int(200000 * 0.85)
 MODEL = "glm-4.7"
 needle = "2needle"
-CONCURRENCY = 5
+CONCURRENCY = 1
 SAMPLES = 1
 MAX_RETRIES = 3
 REQUEST_DELAY_SECONDS = 0
