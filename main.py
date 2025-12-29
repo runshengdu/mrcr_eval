@@ -116,7 +116,7 @@ def build_chat_completion_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
 MAX_CONTEXT_WINDOW = int(200000 * 0.85)
 MODEL = "glm-4.7"
 needle = "2needle"
-CONCURRENCY = 1
+CONCURRENCY = 10
 SAMPLES = 1
 MAX_RETRIES = 3
 REQUEST_DELAY_SECONDS = 0
@@ -273,23 +273,24 @@ async def process_row(idx, row, semaphore: asyncio.Semaphore, queue: asyncio.Que
             "row": idx,
         })
 
-async def run_parallel(samples: int):
+async def run_parallel(samples: int, csv_filename: Path = None):
     semaphore = asyncio.Semaphore(CONCURRENCY)
     queue = asyncio.Queue()
     lock = asyncio.Lock()
     counter = {"count": 0}
     # Prepare CSV filename early and handle header
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_dir = Path("result")
-    result_dir.mkdir(parents=True, exist_ok=True)
-    def _safe_component(s: str) -> str:
-        # Replace path separators and illegal filename characters with '_'
-        # Covers '/', '\\', ':', '*', '?', '"', '<', '>', '|'
-        return re.sub(r"[\\/:*?\"<>|]+", "_", s)
+    if csv_filename is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_dir = Path("result")
+        result_dir.mkdir(parents=True, exist_ok=True)
+        def _safe_component(s: str) -> str:
+            # Replace path separators and illegal filename characters with '_'
+            # Covers '/', '\\', ':', '*', '?', '"', '<', '>', '|'
+            return re.sub(r"[\\/:*?\"<>|]+", "_", s)
 
-    safe_model = _safe_component(MODEL)
-    safe_needle = _safe_component(needle)
-    csv_filename = result_dir / f"{safe_model}_{timestamp}.csv"
+        safe_model = _safe_component(MODEL)
+        safe_needle = _safe_component(needle)
+        csv_filename = result_dir / f"{safe_model}_{timestamp}.csv"
     writer_task = asyncio.create_task(csv_writer(queue, csv_filename))
 
     tasks = []
@@ -303,15 +304,12 @@ async def run_parallel(samples: int):
 
 
 # Resume logic: read latest CSV, continue untested rows, and append results
-async def run_resume(samples: int):
-    result_dir = Path("result")
-    result_dir.mkdir(parents=True, exist_ok=True)
-    latest = find_latest_csv(result_dir)
-    if latest is None:
-        raise FileNotFoundError(f"未找到结果CSV文件，请先运行新测生成：{result_dir}")
+async def run_resume(samples: int, csv_filename: Path):
+    if not csv_filename.exists():
+        raise FileNotFoundError(f"未找到结果CSV文件：{csv_filename}")
 
-    model_resume = parse_model_and_needle(latest.name)
-    print(f"继续测试：文件={latest.name} 模型={model_resume} 数据集={needle}")
+    model_resume = parse_model_and_needle(csv_filename.name)
+    print(f"继续测试：文件={csv_filename.name} 模型={model_resume} 数据集={needle}")
 
     dataset_resume = pd.concat([
         pd.read_parquet(
@@ -332,7 +330,7 @@ async def run_resume(samples: int):
 
     tested_rows = set()
     try:
-        df_done = pd.read_csv(latest)
+        df_done = pd.read_csv(csv_filename)
         if "row" in df_done.columns:
             tested_rows = set(pd.to_numeric(df_done["row"], errors="coerce").dropna().astype(int).tolist())
     except Exception as e:
@@ -346,7 +344,7 @@ async def run_resume(samples: int):
     queue = asyncio.Queue()
     lock = asyncio.Lock()
     counter = {"count": 0}
-    writer_task = asyncio.create_task(csv_writer(queue, str(latest)))
+    writer_task = asyncio.create_task(csv_writer(queue, str(csv_filename)))
 
     tasks = []
     for idx, row in dataset_resume.iterrows():
@@ -367,16 +365,31 @@ async def run_resume(samples: int):
     await queue.put(None)
     await queue.join()
     await writer_task
-    print(f"续测完成，结果已追加到 {latest}")
+    print(f"续测完成，结果已追加到 {csv_filename}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MRCR testing and resume")
-    parser.add_argument("--resume", type=str.lower, choices=["true", "false"], default="false", help="Resume from latest CSV (true/false)")
+    parser.add_argument("--save-to", type=str, default=None, help="Path to save CSV results. If file exists, resume mode is used. If not provided, saves to result folder.")
     parser.add_argument("--samples", type=int, default=SAMPLES, help="Number of samples per question")
     args = parser.parse_args()
-    resume_mode = args.resume == "true"
     samples = max(1, args.samples)
-    if resume_mode:
-        asyncio.run(run_resume(samples))
+    
+    if args.save_to:
+        csv_path = Path(args.save_to)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        if csv_path.exists():
+            print(f"文件已存在，使用续测模式：{csv_path}")
+            asyncio.run(run_resume(samples, csv_path))
+        else:
+            print(f"保存结果到：{csv_path}")
+            asyncio.run(run_parallel(samples, csv_path))
     else:
-        asyncio.run(run_parallel(samples))
+        result_dir = Path("result")
+        result_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        def _safe_component(s: str) -> str:
+            return re.sub(r"[\\/:*?\"<>|]+", "_", s)
+        safe_model = _safe_component(MODEL)
+        csv_path = result_dir / f"{safe_model}_{timestamp}.csv"
+        print(f"保存结果到：{csv_path}")
+        asyncio.run(run_parallel(samples, csv_path))

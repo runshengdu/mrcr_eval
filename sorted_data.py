@@ -4,10 +4,8 @@ import os
 import re
 import matplotlib.pyplot as plt
 from datetime import datetime
-import random
 
-time=datetime.now().strftime("%Y%m%d")
-random_num = random.randint(100, 999)
+time=datetime.now().strftime("%Y%m%d%H%M%S")
 MAX_TOKEN = int(128000)
 
 thresholds = [5000,10000,20000,40000,60000,80000,100000,MAX_TOKEN]
@@ -45,7 +43,7 @@ def main():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    keywords = ["gpt-5.2","gemini-3","deepseek-3.2-thinking","kimi-k2","minimax","glm-4.6","sonnet-4.5"]
+    keywords = ["gpt-5.2","gemini-3","deepseek-3.2-thinking","kimi-k2","minimax-m2.1","glm-4.7","sonnet-4.5"]
     files = [f for f in all_files if any(kw in f.name for kw in keywords)]
     if not files:
         raise FileNotFoundError("没找到对应的文件")
@@ -79,7 +77,7 @@ def main():
 
     out_dir = Path('sorted_data')
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f'test_result_{time}_{random_num}.csv'
+    out_path = out_dir / f'test_result_{time}.csv'
     out_df.to_csv(out_path, index=False)
     print(f"Saved results to {out_path}")
 
@@ -103,7 +101,7 @@ def main():
 
     out_dir = Path("sorted_data")
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig_path = out_dir / f'test_result_{time}_{random_num}.png'
+    fig_path = out_dir / f'test_result_{time}.png'
     plt.tight_layout()
     plt.savefig(fig_path)
     print(f"Saved line chart to {fig_path}")
