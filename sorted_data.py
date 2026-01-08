@@ -7,6 +7,7 @@ from datetime import datetime
 
 time=datetime.now().strftime("%Y%m%d%H%M%S")
 MAX_TOKEN = int(128000)
+needle = "2needle"
 
 thresholds = [5000,10000,20000,40000,60000,80000,100000,MAX_TOKEN]
 
@@ -38,12 +39,12 @@ def accuracy_by_threshold(df: pd.DataFrame, thresholds: list[int]):
     return out
 
 def main():
-    results_dir = Path('result')
+    results_dir = Path(f'results/{needle}')
     if not results_dir.exists():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    keywords = ["gpt-5.2","gemini-3","kimi","qwen"]
+    keywords = ["gpt-5.2","gemini-3","kimi-k2","minimax-m2.1","deepseek-v3.2-thinking","doubao","anthropic","glm-4.7"]
     files = [f for f in all_files if any(kw in f.name for kw in keywords)]
     if not files:
         raise FileNotFoundError("没找到对应的文件")
@@ -75,7 +76,7 @@ def main():
 
     out_df = pd.DataFrame(rows)
 
-    out_dir = Path('sorted_data')
+    out_dir = Path(f'sorted_data/{needle}')
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f'test_result_{time}.csv'
     out_df.to_csv(out_path, index=False)
@@ -90,7 +91,7 @@ def main():
         ys_plot = [per_model[model].get(t, {'avg': 0.0})['avg'] for t in thresholds]
         plt.plot(x_positions_plot, ys_plot, marker="o", linewidth=1.5, label=model)
 
-    plt.title("OpenAI MRCR 2 needle")
+    plt.title(f"OpenAI MRCR {needle}")
     plt.xlabel("Max token")
     plt.ylabel("Average grade")
     plt.xticks(x_positions_plot, x_labels_plot, rotation=45, ha="right")
@@ -99,8 +100,6 @@ def main():
     plt.grid(True, linestyle="--", alpha=0.4)
     plt.legend()
 
-    out_dir = Path("sorted_data")
-    out_dir.mkdir(parents=True, exist_ok=True)
     fig_path = out_dir / f'test_result_{time}.png'
     plt.tight_layout()
     plt.savefig(fig_path)

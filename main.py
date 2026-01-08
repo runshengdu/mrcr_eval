@@ -14,6 +14,14 @@ import re
 from typing import Any
 import yaml
 
+MAX_CONTEXT_WINDOW = int(224000*0.9)
+MODEL = "doubao-seed-1-8-251228"
+needle = "2needle"
+CONCURRENCY = 20
+SAMPLES = 1
+MAX_RETRIES = 3
+REQUEST_DELAY_SECONDS = 0
+
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 
 
@@ -113,13 +121,6 @@ def build_chat_completion_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
             kwargs[k] = model_cfg[k]
     return kwargs
 
-MAX_CONTEXT_WINDOW = int(200000 * 0.85)
-MODEL = "glm-4.7"
-needle = "2needle"
-CONCURRENCY = 10
-SAMPLES = 1
-MAX_RETRIES = 3
-REQUEST_DELAY_SECONDS = 0
 
 MODEL_CONFIG = load_model_config(MODEL)
 client = AsyncOpenAI(api_key=MODEL_CONFIG["api_key"], base_url=MODEL_CONFIG["base_url"])
@@ -281,8 +282,6 @@ async def run_parallel(samples: int, csv_filename: Path = None):
     # Prepare CSV filename early and handle header
     if csv_filename is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_dir = Path("result")
-        result_dir.mkdir(parents=True, exist_ok=True)
         def _safe_component(s: str) -> str:
             # Replace path separators and illegal filename characters with '_'
             # Covers '/', '\\', ':', '*', '?', '"', '<', '>', '|'
@@ -290,6 +289,8 @@ async def run_parallel(samples: int, csv_filename: Path = None):
 
         safe_model = _safe_component(MODEL)
         safe_needle = _safe_component(needle)
+        result_dir = Path("results") / safe_needle
+        result_dir.mkdir(parents=True, exist_ok=True)
         csv_filename = result_dir / f"{safe_model}_{timestamp}.csv"
     writer_task = asyncio.create_task(csv_writer(queue, csv_filename))
 
@@ -369,7 +370,7 @@ async def run_resume(samples: int, csv_filename: Path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MRCR testing and resume")
-    parser.add_argument("--save-to", type=str, default=None, help="Path to save CSV results. If file exists, resume mode is used. If not provided, saves to result folder.")
+    parser.add_argument("--save-to", type=str, default=None, help="Path to save CSV results. If file exists, resume mode is used. If not provided, saves to ./results/{needle}/model_timestamp.csv.")
     parser.add_argument("--samples", type=int, default=SAMPLES, help="Number of samples per question")
     args = parser.parse_args()
     samples = max(1, args.samples)
@@ -384,12 +385,13 @@ if __name__ == "__main__":
             print(f"保存结果到：{csv_path}")
             asyncio.run(run_parallel(samples, csv_path))
     else:
-        result_dir = Path("result")
-        result_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         def _safe_component(s: str) -> str:
             return re.sub(r"[\\/:*?\"<>|]+", "_", s)
         safe_model = _safe_component(MODEL)
+        safe_needle = _safe_component(needle)
+        result_dir = Path("results") / safe_needle
+        result_dir.mkdir(parents=True, exist_ok=True)
         csv_path = result_dir / f"{safe_model}_{timestamp}.csv"
         print(f"保存结果到：{csv_path}")
         asyncio.run(run_parallel(samples, csv_path))
