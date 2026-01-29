@@ -1,73 +1,79 @@
 # MRCR Test Code
 
-本仓库包含两个主要脚本：
+This repository contains two main scripts:
 
-- `main.py`：运行/续测 MRCR 数据集的模型评测，按行异步调用模型接口并将结果写入 CSV。
-- `sorted_data.py`：对评测结果进行阈值分桶统计并绘制折线图。
+- `main.py`: Run/resume MRCR evaluations, asynchronously call the model API per row, and write results to CSV.
+- `sorted_data.py`: Bucket results by token thresholds and plot line charts.
 
-## 依赖与准备
+## Dependencies & Setup
 
-- Python 3.10+（建议）。
-- 依赖：`pandas`, `huggingface_hub`, `openai`（异步版 SDK）, `tiktoken`, `pyyaml`, `matplotlib` 等。可按需 `pip install pandas huggingface_hub openai tiktoken pyyaml matplotlib`.
-- 需要在仓库根目录提供 `models.yaml`，包含模型的 `base_url` 与 `api_key`（可使用 `${ENV_VAR}` 占位并从环境变量读取）。`main.py` 默认模型名为 `glm-4.7`，如需改动请同步更新配置。
-- 评测数据来自 HF 数据集 `openai/mrcr`，在运行时通过 `hf_hub_download` 自动下载。默认 needle 目录为 `2needle`。
+- Python 3.10+ (recommended)
+- Dependencies: `pandas`, `huggingface_hub`, `openai` (async SDK), `pyyaml`, `matplotlib`
+  - Install as needed: `pip install pandas huggingface_hub openai pyyaml matplotlib`
+- Provide a `models.yaml` in the repo root with `base_url` and `api_key` (supports `${ENV_VAR}` placeholders)
+  - Default model is `kimi-k2.5`, overridable via `--model-id`
+- The dataset comes from HF `openai/mrcr` and is downloaded at runtime via `hf_hub_download`
+- Default needle directory: `2needle`
 
-## 运行评测（main.py）
+## Running Evaluations (`main.py`)
 
-`main.py` 会遍历 `needle` 对应的 parquet 数据（`2needle_0/1.parquet`），异步调用模型并将结果写入 CSV。写出的列：`grade`, `token_count`, `row`。
+`main.py` iterates over the parquet files for the selected needle (`2needle_0/1.parquet`), calls the model asynchronously, and writes results to CSV. Columns:
+`grade`, `token_count`, `row`, `prompt_char_count`, `real_prompt_tokens`, `updated_token_ratio`.
 
-### CLI 参数
+### CLI Arguments
 
-- `--save-to PATH`（可选）：指定结果 CSV 路径。
-  - 若文件已存在，则进入“续测”模式，跳过已完成的 `row` 并追加剩余结果。
-  - 若文件不存在，则新建并执行全量评测。
-- `--samples N`（可选，默认 `SAMPLES` 常量=1）：每行调用次数，取平均分。
+- `--save-to PATH` (optional): output CSV path
+  - If the file exists, resume mode is used and completed rows are skipped
+  - If not, a full run is started
+- `--samples N` (optional, default `SAMPLES`=1): number of calls per row (averaged)
+- `--model-id NAME` (optional, default `kimi-k2.5`): model name (key in `models.yaml`)
 
-### 默认保存路径（未传 --save-to）
+### Default Output Path (when `--save-to` is omitted)
 
-- 路径：`./results/{needle}/{model}_{timestamp}.csv`
-- 其中 `{needle}` 和 `{model}` 来自脚本顶部常量（默认 `needle="2needle"`, `MODEL="glm-4.7"`），`{timestamp}` 为当前时间 `YYYYMMDD_HHMMSS`。
+- Path: `./results/{needle}/{model}/{timestamp}.csv`
+- `{needle}` defaults to `2needle`, `{model}` is `--model-id` (default `kimi-k2.5`), `{timestamp}` is `YYYYMMDD_HHMMSS`
 
-### 示例
+### Examples
 
-- 全量评测并使用默认路径：
+- Full run with default path:
   ```bash
-  python main.py
+  python main.py --model-id kimi-k2.5
   ```
-- 指定保存文件（不存在则新测，存在则续测）：
+- Specify output file (new or resume):
   ```bash
-  python main.py --save-to results/2needle/glm-4.7_run.csv
+  python main.py --model-id kimi-k2.5 --save-to results/2needle/kimi-k2.5/run.csv
   ```
-- 调整采样次数：
+- Adjust samples:
   ```bash
-  python main.py --samples 3 --save-to results/2needle/glm-4.7_run.csv
+  python main.py --samples 3 --model-id kimi-k2.5 --save-to results/2needle/kimi-k2.5/run.csv
   ```
 
-## 结果汇总与可视化（sorted_data.py）
+## Result Summary & Visualization (`sorted_data.py`)
 
-`sorted_data.py` 读取 `results/{needle}` 下的 CSV，按预设关键词筛选模型文件，计算不同 token 阈值下的平均分并生成汇总表与折线图。
+`sorted_data.py` reads CSVs under `results/{needle}`, filters by keywords, computes average grades by token thresholds, and generates a summary table and a line chart.
 
-- 默认阈值列表：`[5000, 10000, 20000, 40000, 60000, 80000, 100000, 128000]`。
-- 文件筛选关键词（文件名包含）：`["gpt-5.2","gemini-3","kimi-k2","minimax-m2.1","deepseek-v3.2-thinking","doubao","anthropic","glm-4.7"]`。
-- 输出目录：`sorted_data/{needle}`，生成：
-  - `test_result_{timestamp}.csv`：各阈值下各模型的平均分与样本数（格式 `model=avg|n=count`）。
-  - `test_result_{timestamp}.png`：折线图（x 轴为最大 token 阈值，y 轴为平均分）。
+- Default thresholds: `[5000, 10000, 20000, 40000, 60000, 80000, 100000, 128000]`
+- Filename keywords: `"gpt-5.2","gemini-3","kimi-k2","minimax-m2.1","deepseek-v3.2-thinking","doubao","anthropic","glm-4.7"`
+- Output directory: `sorted_data/{needle}`
+  - `test_result_{timestamp}.csv`: per-threshold averages and sample counts (`model=avg|n=count`)
+  - `test_result_{timestamp}.png`: line chart (x=token threshold, y=average grade)
 
-### 运行
+### Run
 
 ```bash
 python sorted_data.py
 ```
 
-运行前请确保 `results/{needle}` 目录下已有评测 CSV，且文件名满足关键词匹配。
+Ensure `results/{needle}` contains CSVs that match the keyword filter before running.
 
-## 重要常量（可按需调整）
+## Key Constants (Adjustable)
 
-- `needle`：默认 `"2needle"`，决定使用的数据子目录及输出路径。
-- `MODEL`：默认 `"glm-4.7"`，影响默认输出文件名及模型配置读取。
-- `CONCURRENCY`、`SAMPLES`、`MAX_RETRIES` 等参数位于 `main.py` 顶部。
+- `needle`: default `"2needle"`, selects dataset subdir and output path
+- `DEFAULT_MODEL_ID`/`MODEL`: default `"kimi-k2.5"`, controls model config and default output path
+- `CONCURRENCY`, `SAMPLES`, `MAX_RETRIES`, etc. are defined at the top of `main.py`
 
-## 续测机制说明
+## Resume Behavior
 
-- 当 `--save-to` 指向已存在的 CSV 时，脚本读取已完成行的 `row` 列并跳过，仅对未完成行继续评测，结果追加到同一文件。
-- 若读取已有结果出错，将回退为从头开始。
+- If `--save-to` points to an existing CSV, completed rows are skipped and remaining results are appended
+- Resume mode does **not** warm up; it loads the latest `updated_token_ratio` (or `real_prompt_tokens / prompt_char_count`) from the CSV and continues updating the ratio during resume
+- If reading the existing CSV fails, the script falls back to a full run
