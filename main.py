@@ -13,11 +13,11 @@ import re
 from typing import Any
 import yaml
 
-MAX_CONTEXT_WINDOW = int(256000)
+MAX_CONTEXT_WINDOW = int(200000)
 DEFAULT_MODEL_ID = "kimi-k2.5"
 MODEL = DEFAULT_MODEL_ID
-needle = "2needle"
-CONCURRENCY = 30
+needle = "8needle"
+CONCURRENCY = 20
 SAMPLES = 1
 MAX_RETRIES = 3
 REQUEST_DELAY_SECONDS = 0
@@ -419,9 +419,7 @@ async def run_parallel(samples: int, csv_filename: Path = None):
         safe_needle = _safe_component(needle)
         result_dir = Path("results") / safe_needle
         result_dir.mkdir(parents=True, exist_ok=True)
-        model_dir = result_dir
-        model_dir.mkdir(parents=True, exist_ok=True)
-        csv_filename = model_dir / f"{safe_model}_{timestamp}.csv"
+        csv_filename = result_dir / f"{safe_model}_{timestamp}.csv"
     else:
         csv_filename.parent.mkdir(parents=True, exist_ok=True)
     writer_task = asyncio.create_task(csv_writer(result_queue, csv_filename))
@@ -692,8 +690,6 @@ if __name__ == "__main__":
         safe_needle = _safe_component(needle)
         result_dir = Path("results") / safe_needle
         result_dir.mkdir(parents=True, exist_ok=True)
-        model_dir = result_dir / safe_model
-        model_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = model_dir / f"{safe_model}_{timestamp}.csv"
+        csv_path = result_dir / f"{safe_model}_{timestamp}.csv"
         print(f"保存结果到：{csv_path}")
         asyncio.run(run_parallel(samples, csv_path))

@@ -6,10 +6,10 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 time=datetime.now().strftime("%Y%m%d%H%M%S")
-MAX_TOKEN = int(128000)
-needle = "2needle"
+MAX_TOKEN = int(256000)
+needle = "8needle"
 
-thresholds = [5000,10000,20000,40000,60000,80000,100000,MAX_TOKEN]
+thresholds = [8000,16000,32000,64000,128000,MAX_TOKEN]
 
 def extract_model_name(filename: str) -> str:
     base = os.path.basename(filename)
@@ -44,7 +44,7 @@ def main():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    keywords = ["gpt-5.2","gemini-3","kimi-k2","minimax-m2.1","deepseek-v3.2-thinking","doubao","anthropic","glm-4.7","kimi-k2.5"]
+    keywords = ["kimi","glm","doubao"]
     files = [f for f in all_files if any(kw in f.name for kw in keywords)]
     if not files:
         raise FileNotFoundError("没找到对应的文件")
