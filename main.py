@@ -13,11 +13,9 @@ import re
 from typing import Any
 import yaml
 
-MAX_CONTEXT_WINDOW = int(200000)
-DEFAULT_MODEL_ID = "kimi-k2.5"
-MODEL = DEFAULT_MODEL_ID
-needle = "8needle"
-CONCURRENCY = 20
+MAX_CONTEXT_WINDOW = int(200000*0.9)
+MODEL = ""
+needle = ""
 SAMPLES = 1
 MAX_RETRIES = 3
 REQUEST_DELAY_SECONDS = 0
@@ -133,22 +131,26 @@ def init_model(model_id: str) -> None:
     MODEL_CONFIG = load_model_config(MODEL)
     client = AsyncOpenAI(api_key=MODEL_CONFIG["api_key"], base_url=MODEL_CONFIG["base_url"])
 
-dataset = pd.concat([
-    pd.read_parquet(
-        hf_hub_download(
-            repo_id="openai/mrcr",
-            filename=f"{needle}/{needle}_0.parquet",
-            repo_type="dataset",
-        )
-    ),
-    pd.read_parquet(
-        hf_hub_download(
-            repo_id="openai/mrcr",
-            filename=f"{needle}/{needle}_1.parquet",
-            repo_type="dataset",
-        )
-    ),
-])
+def load_dataset(selected_needle: str) -> pd.DataFrame:
+    selected_needle = str(selected_needle)
+    return pd.concat([
+        pd.read_parquet(
+            hf_hub_download(
+                repo_id="openai/mrcr",
+                filename=f"{selected_needle}/{selected_needle}_0.parquet",
+                repo_type="dataset",
+            )
+        ),
+        pd.read_parquet(
+            hf_hub_download(
+                repo_id="openai/mrcr",
+                filename=f"{selected_needle}/{selected_needle}_1.parquet",
+                repo_type="dataset",
+            )
+        ),
+    ])
+
+dataset: pd.DataFrame | None = None
 
 def grade(response, answer, random_string_to_prepend) -> float:
     """
@@ -400,7 +402,10 @@ async def process_row(idx, row, queue: asyncio.Queue, io_lock: asyncio.Lock, rat
             "updated_token_ratio": updated_ratio,
         })
 
-async def run_parallel(samples: int, csv_filename: Path = None):
+async def run_parallel(samples: int, csv_filename: Path = None, max_workers: int = 20):
+    if dataset is None:
+        raise RuntimeError("Dataset is not initialized. Please call load_dataset() first.")
+    max_workers = max(1, int(max_workers))
     result_queue = asyncio.Queue()
     jobs_queue: asyncio.Queue = asyncio.Queue()
     io_lock = asyncio.Lock()
@@ -523,8 +528,8 @@ async def run_parallel(samples: int, csv_filename: Path = None):
             finally:
                 jobs_queue.task_done()
 
-    workers = [asyncio.create_task(worker()) for _ in range(CONCURRENCY)]
-    for _ in range(CONCURRENCY):
+    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
+    for _ in range(max_workers):
         await jobs_queue.put(None)
 
     await jobs_queue.join()
@@ -543,7 +548,8 @@ async def run_parallel(samples: int, csv_filename: Path = None):
 
 
 # Resume logic: read latest CSV, continue untested rows, and append results
-async def run_resume(samples: int, csv_filename: Path):
+async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
+    max_workers = max(1, int(max_workers))
     if not csv_filename.exists():
         raise FileNotFoundError(f"未找到结果CSV文件：{csv_filename}")
 
@@ -644,8 +650,8 @@ async def run_resume(samples: int, csv_filename: Path):
             finally:
                 jobs_queue.task_done()
 
-    workers = [asyncio.create_task(worker()) for _ in range(CONCURRENCY)]
-    for _ in range(CONCURRENCY):
+    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
+    for _ in range(max_workers):
         await jobs_queue.put(None)
 
     await jobs_queue.join()
@@ -667,9 +673,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MRCR testing and resume")
     parser.add_argument("--save-to", type=str, default=None, help="Path to save CSV results. If file exists, resume mode is used. If not provided, saves to ./results/{needle}/model_timestamp.csv.")
     parser.add_argument("--samples", type=int, default=SAMPLES, help="Number of samples per question")
-    parser.add_argument("--model-id", type=str, default=DEFAULT_MODEL_ID, help="Model name (key in models.yaml)")
+    parser.add_argument("--max-workers", type=int, default=20, help="Maximum number of concurrent workers")
+    parser.add_argument("--needle", type=str, default="8needle", help="Needle dataset subdir name (e.g. 2needle/8needle)")
+    parser.add_argument("--model-id", type=str, default="kimi-k2.5", help="Model name (key in models.yaml)")
     args = parser.parse_args()
     samples = max(1, args.samples)
+    max_workers = max(1, args.max_workers)
+    needle = str(args.needle)
+    dataset = load_dataset(needle)
 
     init_model(args.model_id)
     
@@ -678,10 +689,10 @@ if __name__ == "__main__":
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         if csv_path.exists():
             print(f"文件已存在，使用续测模式：{csv_path}")
-            asyncio.run(run_resume(samples, csv_path))
+            asyncio.run(run_resume(samples, csv_path, max_workers))
         else:
             print(f"保存结果到：{csv_path}")
-            asyncio.run(run_parallel(samples, csv_path))
+            asyncio.run(run_parallel(samples, csv_path, max_workers))
     else:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         def _safe_component(s: str) -> str:
@@ -692,4 +703,4 @@ if __name__ == "__main__":
         result_dir.mkdir(parents=True, exist_ok=True)
         csv_path = result_dir / f"{safe_model}_{timestamp}.csv"
         print(f"保存结果到：{csv_path}")
-        asyncio.run(run_parallel(samples, csv_path))
+        asyncio.run(run_parallel(samples, csv_path, max_workers))
