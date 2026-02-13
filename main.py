@@ -10,7 +10,7 @@ from pathlib import Path
 import asyncio
 import csv
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable
 import yaml
 
 MAX_CONTEXT_WINDOW = int(200000*0.9)
@@ -24,6 +24,17 @@ WARMUP_MAX_PROMPT_CHARS = 50000
 
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
+
+def safe_filename_component(s: str) -> str:
+    return re.sub(r"[\\/:*?\"<>|]+", "_", str(s))
+
+def build_default_csv_path(model: str, selected_needle: str) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_model = safe_filename_component(model)
+    safe_needle = safe_filename_component(selected_needle)
+    result_dir = Path("results") / safe_needle
+    result_dir.mkdir(parents=True, exist_ok=True)
+    return result_dir / f"{safe_model}_{timestamp}.csv"
 
 
 def _expand_env_vars(value: Any) -> Any:
@@ -244,19 +255,6 @@ def _latest_ratio_from_existing_csv(df_done: pd.DataFrame) -> float | None:
             return float(last_t / last_c)
     return None
 
-async def _create_stream_with_usage(api_client: AsyncOpenAI, *, model: str, messages: list[dict], timeout: float, request_kwargs: dict[str, Any]):
-    try:
-        return await api_client.chat.completions.create(
-            model=model,
-            messages=messages,
-            timeout=timeout,
-            **request_kwargs,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
-    except Exception:
-        raise
-
 async def _get_current_ratio(ratio_state: dict[str, Any], ratio_lock: asyncio.Lock) -> float | None:
     async with ratio_lock:
         return ratio_state.get("ratio")
@@ -280,6 +278,69 @@ async def _observe_ratio(ratio_state: dict[str, Any], ratio_lock: asyncio.Lock, 
             ratio_state["ratio"] = float(observed_sum / float(observed_count))
             ratio_state["updates"] = int(ratio_state.get("updates") or 0) + 1
         return float(ratio_state["ratio"])
+
+async def _run_worker_pool(jobs_queue: asyncio.Queue, *, max_workers: int, process_item: Callable[[Any], Awaitable[None]]):
+    stop_event = asyncio.Event()
+    first_exc: dict[str, Exception | None] = {"exc": None}
+
+    async def worker():
+        while True:
+            item = await jobs_queue.get()
+            try:
+                if item is None:
+                    return
+                if stop_event.is_set():
+                    continue
+                await process_item(item)
+            except Exception as e:
+                if not stop_event.is_set():
+                    stop_event.set()
+                    first_exc["exc"] = e
+            finally:
+                jobs_queue.task_done()
+
+    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
+    for _ in range(max_workers):
+        await jobs_queue.put(None)
+
+    await jobs_queue.join()
+    worker_results = await asyncio.gather(*workers, return_exceptions=True)
+    return first_exc.get("exc"), worker_results
+
+async def _warmup_ratio(*, dataset: pd.DataFrame, result_queue: asyncio.Queue, io_lock: asyncio.Lock, ratio_state: dict[str, Any], ratio_lock: asyncio.Lock, counter: dict, samples: int, max_attempts: int, only_short_prompts: bool) -> int:
+    warmup_attempts = 0
+    for idx, row in dataset.iterrows():
+        if warmup_attempts >= max_attempts:
+            break
+        if only_short_prompts:
+            cc = row_prompt_char_count(row)
+            if cc is None or cc >= WARMUP_MAX_PROMPT_CHARS:
+                continue
+
+        warmup_attempts += 1
+        print(f"Running warmup on row={idx} (attempt {warmup_attempts}/{max_attempts})")
+
+        try:
+            await process_row(
+                idx,
+                row,
+                result_queue,
+                io_lock,
+                ratio_state,
+                ratio_lock,
+                counter,
+                resume_mode=False,
+                samples=samples,
+                skip_length_check=True,
+                emit_result=False,
+            )
+        except Exception as e:
+            print(f"Warmup failed on row={idx}: {e}")
+
+        if (await _get_current_ratio(ratio_state, ratio_lock)) is not None:
+            print(f"Warmup success. Ratio initialized.")
+            break
+    return warmup_attempts
 
 async def process_row(idx, row, queue: asyncio.Queue, io_lock: asyncio.Lock, ratio_state: dict[str, Any], ratio_lock: asyncio.Lock, counter: dict, client_api: AsyncOpenAI = None, model_name: str = None, resume_mode: bool = False, samples: int = SAMPLES, skip_length_check: bool = False, emit_result: bool = True):
     """Process a single dataset row with sampling and retries.
@@ -320,12 +381,13 @@ async def process_row(idx, row, queue: asyncio.Queue, io_lock: asyncio.Lock, rat
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 await asyncio.sleep(REQUEST_DELAY_SECONDS)
-                stream = await _create_stream_with_usage(
-                    api_client,
+                stream = await api_client.chat.completions.create(
                     model=model,
                     messages=messages,
                     timeout=60.0,
-                    request_kwargs=request_kwargs,
+                    **request_kwargs,
+                    stream=True,
+                    stream_options={"include_usage": True},
                 )
                 chunks: list[str] = []
                 async for chunk in stream:
@@ -414,132 +476,60 @@ async def run_parallel(samples: int, csv_filename: Path = None, max_workers: int
     counter = {"count": 0}
     # Prepare CSV filename early and handle header
     if csv_filename is None:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        def _safe_component(s: str) -> str:
-            # Replace path separators and illegal filename characters with '_'
-            # Covers '/', '\\', ':', '*', '?', '"', '<', '>', '|'
-            return re.sub(r"[\\/:*?\"<>|]+", "_", s)
-
-        safe_model = _safe_component(MODEL)
-        safe_needle = _safe_component(needle)
-        result_dir = Path("results") / safe_needle
-        result_dir.mkdir(parents=True, exist_ok=True)
-        csv_filename = result_dir / f"{safe_model}_{timestamp}.csv"
+        csv_filename = build_default_csv_path(MODEL, needle)
     else:
         csv_filename.parent.mkdir(parents=True, exist_ok=True)
     writer_task = asyncio.create_task(csv_writer(result_queue, csv_filename))
 
-    warmup_attempts = 0
     MAX_WARMUP_ATTEMPTS = 3
-
-    for idx, row in dataset.iterrows():
-        if warmup_attempts >= MAX_WARMUP_ATTEMPTS:
-            break
-        cc = row_prompt_char_count(row)
-        if cc is None or cc >= WARMUP_MAX_PROMPT_CHARS:
-            continue
-
-        warmup_attempts += 1
-        print(f"Running warmup on row={idx} (attempt {warmup_attempts}/{MAX_WARMUP_ATTEMPTS})")
-
-        try:
-            await process_row(
-                idx,
-                row,
-                result_queue,
-                io_lock,
-                ratio_state,
-                ratio_lock,
-                counter,
-                resume_mode=False,
-                samples=samples,
-                skip_length_check=True,
-                emit_result=False,
-            )
-        except Exception as e:
-            print(f"Warmup failed on row={idx}: {e}")
-
-        if (await _get_current_ratio(ratio_state, ratio_lock)) is not None:
-            print(f"Warmup success. Ratio initialized.")
-            break
-
+    warmup_attempts = await _warmup_ratio(
+        dataset=dataset,
+        result_queue=result_queue,
+        io_lock=io_lock,
+        ratio_state=ratio_state,
+        ratio_lock=ratio_lock,
+        counter=counter,
+        samples=samples,
+        max_attempts=MAX_WARMUP_ATTEMPTS,
+        only_short_prompts=True,
+    )
     if warmup_attempts == 0:
-        for idx, row in dataset.iterrows():
-            if warmup_attempts >= MAX_WARMUP_ATTEMPTS:
-                break
-
-            warmup_attempts += 1
-            print(f"Running warmup on row={idx} (attempt {warmup_attempts}/{MAX_WARMUP_ATTEMPTS})")
-
-            try:
-                await process_row(
-                    idx,
-                    row,
-                    result_queue,
-                    io_lock,
-                    ratio_state,
-                    ratio_lock,
-                    counter,
-                    resume_mode=False,
-                    samples=samples,
-                    skip_length_check=True,
-                    emit_result=False,
-                )
-            except Exception as e:
-                print(f"Warmup failed on row={idx}: {e}")
-
-            if (await _get_current_ratio(ratio_state, ratio_lock)) is not None:
-                print(f"Warmup success. Ratio initialized.")
-                break
+        warmup_attempts = await _warmup_ratio(
+            dataset=dataset,
+            result_queue=result_queue,
+            io_lock=io_lock,
+            ratio_state=ratio_state,
+            ratio_lock=ratio_lock,
+            counter=counter,
+            samples=samples,
+            max_attempts=MAX_WARMUP_ATTEMPTS,
+            only_short_prompts=False,
+        )
 
     if (await _get_current_ratio(ratio_state, ratio_lock)) is None:
         raise RuntimeError(f"Warmup failed: Could not initialize token ratio after {warmup_attempts} attempts.")
 
     for idx, row in dataset.iterrows():
         await jobs_queue.put((idx, row))
-
-    stop_event = asyncio.Event()
-    first_exc: dict[str, Exception | None] = {"exc": None}
-
-    async def worker():
-        while True:
-            item = await jobs_queue.get()
-            try:
-                if item is None:
-                    return
-                if stop_event.is_set():
-                    continue
-                idx, row = item
-                await process_row(
-                    idx,
-                    row,
-                    result_queue,
-                    io_lock,
-                    ratio_state,
-                    ratio_lock,
-                    counter,
-                    resume_mode=False,
-                    samples=samples,
-                )
-            except Exception as e:
-                if not stop_event.is_set():
-                    stop_event.set()
-                    first_exc["exc"] = e
-            finally:
-                jobs_queue.task_done()
-
-    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
-    for _ in range(max_workers):
-        await jobs_queue.put(None)
-
-    await jobs_queue.join()
-    worker_results = await asyncio.gather(*workers, return_exceptions=True)
+    async def process_item(item: Any) -> None:
+        idx, row = item
+        await process_row(
+            idx,
+            row,
+            result_queue,
+            io_lock,
+            ratio_state,
+            ratio_lock,
+            counter,
+            resume_mode=False,
+            samples=samples,
+        )
+    exc, worker_results = await _run_worker_pool(jobs_queue, max_workers=max_workers, process_item=process_item)
 
     await result_queue.put(None)
     await result_queue.join()
     await writer_task
 
-    exc = first_exc.get("exc")
     if exc is not None:
         raise exc
     for r in worker_results:
@@ -553,25 +543,8 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
     if not csv_filename.exists():
         raise FileNotFoundError(f"未找到结果CSV文件：{csv_filename}")
 
-    model_resume = csv_filename.parent.name
-    print(f"继续测试：文件={csv_filename.name} 模型={model_resume} 数据集={needle}")
-
-    dataset_resume = pd.concat([
-        pd.read_parquet(
-            hf_hub_download(
-                repo_id="openai/mrcr",
-                filename=f"{needle}/{needle}_0.parquet",
-                repo_type="dataset",
-            )
-        ),
-        pd.read_parquet(
-            hf_hub_download(
-                repo_id="openai/mrcr",
-                filename=f"{needle}/{needle}_1.parquet",
-                repo_type="dataset",
-            )
-        ),
-    ])
+    print(f"继续测试：文件={csv_filename.name} 模型={csv_filename.parent.name} 数据集={needle}")
+    dataset_resume = dataset if dataset is not None else load_dataset(needle)
 
     tested_rows = set()
     df_done = None
@@ -581,9 +554,6 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
             tested_rows = set(pd.to_numeric(df_done["row"], errors="coerce").dropna().astype(int).tolist())
     except Exception as e:
         print(f"读取已有结果失败，将从头开始。原因: {e}")
-
-    # Use the global client and global MODEL; do not switch client by filename
-    client_resume = client
 
     pending_count = 0
     result_queue = asyncio.Queue()
@@ -617,51 +587,27 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
         return
 
     print(f"待续测行数: {pending_count}")
-
-    stop_event = asyncio.Event()
-    first_exc: dict[str, Exception | None] = {"exc": None}
-
-    async def worker():
-        while True:
-            item = await jobs_queue.get()
-            try:
-                if item is None:
-                    return
-                if stop_event.is_set():
-                    continue
-                idx, row = item
-                await process_row(
-                    idx,
-                    row,
-                    result_queue,
-                    io_lock,
-                    ratio_state,
-                    ratio_lock,
-                    counter,
-                    client_resume,
-                    None,
-                    True,
-                    samples,
-                )
-            except Exception as e:
-                if not stop_event.is_set():
-                    stop_event.set()
-                    first_exc["exc"] = e
-            finally:
-                jobs_queue.task_done()
-
-    workers = [asyncio.create_task(worker()) for _ in range(max_workers)]
-    for _ in range(max_workers):
-        await jobs_queue.put(None)
-
-    await jobs_queue.join()
-    worker_results = await asyncio.gather(*workers, return_exceptions=True)
+    async def process_item(item: Any) -> None:
+        idx, row = item
+        await process_row(
+            idx,
+            row,
+            result_queue,
+            io_lock,
+            ratio_state,
+            ratio_lock,
+            counter,
+            client,
+            None,
+            True,
+            samples,
+        )
+    exc, worker_results = await _run_worker_pool(jobs_queue, max_workers=max_workers, process_item=process_item)
 
     await result_queue.put(None)
     await result_queue.join()
     await writer_task
 
-    exc = first_exc.get("exc")
     if exc is not None:
         raise exc
     for r in worker_results:
@@ -694,13 +640,6 @@ if __name__ == "__main__":
             print(f"保存结果到：{csv_path}")
             asyncio.run(run_parallel(samples, csv_path, max_workers))
     else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        def _safe_component(s: str) -> str:
-            return re.sub(r"[\\/:*?\"<>|]+", "_", s)
-        safe_model = _safe_component(MODEL)
-        safe_needle = _safe_component(needle)
-        result_dir = Path("results") / safe_needle
-        result_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = result_dir / f"{safe_model}_{timestamp}.csv"
+        csv_path = build_default_csv_path(MODEL, needle)
         print(f"保存结果到：{csv_path}")
         asyncio.run(run_parallel(samples, csv_path, max_workers))
