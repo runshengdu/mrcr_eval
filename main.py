@@ -229,6 +229,34 @@ async def csv_writer(queue: asyncio.Queue, filename: Path):
             writer.writerow(item)
         queue.task_done()
 
+def _init_ratio_state(initial_ratio: float | None = None) -> dict[str, Any]:
+    ratio_state: dict[str, Any] = {"ratio": None, "observed_sum": 0.0, "observed_count": 0, "updates": 0}
+    if initial_ratio is not None:
+        ratio_state["ratio"] = float(initial_ratio)
+        ratio_state["observed_sum"] = float(initial_ratio)
+        ratio_state["observed_count"] = 1
+    return ratio_state
+
+def _init_run_context(csv_filename: Path):
+    result_queue = asyncio.Queue()
+    jobs_queue: asyncio.Queue = asyncio.Queue()
+    io_lock = asyncio.Lock()
+    ratio_lock = asyncio.Lock()
+    ratio_state = _init_ratio_state()
+    counter = {"count": 0}
+    writer_task = asyncio.create_task(csv_writer(result_queue, csv_filename))
+    return result_queue, jobs_queue, io_lock, ratio_lock, ratio_state, counter, writer_task
+
+async def _finalize_run(result_queue: asyncio.Queue, writer_task: asyncio.Task, exc, worker_results):
+    await result_queue.put(None)
+    await result_queue.join()
+    await writer_task
+    if exc is not None:
+        raise exc
+    for r in worker_results:
+        if isinstance(r, Exception):
+            raise r
+
 def _try_get_prompt_tokens_from_usage(usage: Any) -> int | None:
     if usage is None:
         return None
@@ -468,18 +496,12 @@ async def run_parallel(samples: int, csv_filename: Path = None, max_workers: int
     if dataset is None:
         raise RuntimeError("Dataset is not initialized. Please call load_dataset() first.")
     max_workers = max(1, int(max_workers))
-    result_queue = asyncio.Queue()
-    jobs_queue: asyncio.Queue = asyncio.Queue()
-    io_lock = asyncio.Lock()
-    ratio_lock = asyncio.Lock()
-    ratio_state: dict[str, Any] = {"ratio": None, "observed_sum": 0.0, "observed_count": 0, "updates": 0}
-    counter = {"count": 0}
     # Prepare CSV filename early and handle header
     if csv_filename is None:
         csv_filename = build_default_csv_path(MODEL, needle)
     else:
         csv_filename.parent.mkdir(parents=True, exist_ok=True)
-    writer_task = asyncio.create_task(csv_writer(result_queue, csv_filename))
+    result_queue, jobs_queue, io_lock, ratio_lock, ratio_state, counter, writer_task = _init_run_context(csv_filename)
 
     MAX_WARMUP_ATTEMPTS = 3
     warmup_attempts = await _warmup_ratio(
@@ -525,16 +547,7 @@ async def run_parallel(samples: int, csv_filename: Path = None, max_workers: int
             samples=samples,
         )
     exc, worker_results = await _run_worker_pool(jobs_queue, max_workers=max_workers, process_item=process_item)
-
-    await result_queue.put(None)
-    await result_queue.join()
-    await writer_task
-
-    if exc is not None:
-        raise exc
-    for r in worker_results:
-        if isinstance(r, Exception):
-            raise r
+    await _finalize_run(result_queue, writer_task, exc, worker_results)
 
 
 # Resume logic: read latest CSV, continue untested rows, and append results
@@ -556,22 +569,13 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
         print(f"读取已有结果失败，将从头开始。原因: {e}")
 
     pending_count = 0
-    result_queue = asyncio.Queue()
-    jobs_queue: asyncio.Queue = asyncio.Queue()
-    io_lock = asyncio.Lock()
-    ratio_lock = asyncio.Lock()
-    ratio_state: dict[str, Any] = {"ratio": None, "observed_sum": 0.0, "observed_count": 0, "updates": 0}
-    counter = {"count": 0}
-    writer_task = asyncio.create_task(csv_writer(result_queue, csv_filename))
+    result_queue, jobs_queue, io_lock, ratio_lock, ratio_state, counter, writer_task = _init_run_context(csv_filename)
 
     existing_ratio = _latest_ratio_from_existing_csv(df_done) if df_done is not None else None
     if existing_ratio is None:
         raise RuntimeError("Resume failed: Could not load token ratio from existing CSV (updated_token_ratio/real_prompt_tokens).")
     async with ratio_lock:
-        ratio_state["ratio"] = float(existing_ratio)
-        ratio_state["observed_sum"] = float(existing_ratio)
-        ratio_state["observed_count"] = 1
-        ratio_state["updates"] = 0
+        ratio_state.update(_init_ratio_state(existing_ratio))
 
     for idx, row in dataset_resume.iterrows():
         if idx in tested_rows:
@@ -581,9 +585,7 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
 
     if pending_count == 0:
         print("CSV 已包含所有行的测试结果，无需续测。")
-        await result_queue.put(None)
-        await result_queue.join()
-        await writer_task
+        await _finalize_run(result_queue, writer_task, None, [])
         return
 
     print(f"待续测行数: {pending_count}")
@@ -603,16 +605,7 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
             samples,
         )
     exc, worker_results = await _run_worker_pool(jobs_queue, max_workers=max_workers, process_item=process_item)
-
-    await result_queue.put(None)
-    await result_queue.join()
-    await writer_task
-
-    if exc is not None:
-        raise exc
-    for r in worker_results:
-        if isinstance(r, Exception):
-            raise r
+    await _finalize_run(result_queue, writer_task, exc, worker_results)
     print(f"续测完成，结果已追加到 {csv_filename}")
 
 if __name__ == "__main__":
