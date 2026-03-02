@@ -44,7 +44,7 @@ def main():
         raise FileNotFoundError("'result' directory not found")
 
     all_files = sorted(results_dir.glob('*.csv'))
-    keywords = ["kimi","glm","doubao"]
+    keywords = ["kimi-k2.5","glm-5","doubao-seed-2-0","qwen3.5","minimax-m2.5"]
     files = [f for f in all_files if any(kw in f.name for kw in keywords)]
     if not files:
         raise FileNotFoundError("没找到对应的文件")
