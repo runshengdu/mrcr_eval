@@ -38,6 +38,13 @@ models:
     base_url: https://api.deepseek.com
     api_key: "${DEEPSEEK_API_KEY}"
     max_tokens: 60000
+  
+  - name: nvidia/nemotron-3-super-120b-a12b:free
+    temperature: 1.0
+    base_url: https://openrouter.ai/api/v1
+    api_key: "${OPENROUTER_API_KEY}"
+    extra_body: {"reasoning": {"enabled": True}}
+    max_tokens: 30000
 
   - name: glm-5
     temperature: 1.0
