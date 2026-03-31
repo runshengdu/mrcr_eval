@@ -37,7 +37,7 @@ models:
     temperature: 1.0
     base_url: https://api.deepseek.com
     api_key: "${DEEPSEEK_API_KEY}"
-    max_tokens: 60000
+    max_tokens: 20000
   
   - name: nvidia/nemotron-3-super-120b-a12b:free
     temperature: 1.0

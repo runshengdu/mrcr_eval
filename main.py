@@ -13,7 +13,7 @@ import re
 from typing import Any, Awaitable, Callable
 import yaml
 
-MAX_CONTEXT_WINDOW = int(200000*0.9)
+MAX_CONTEXT_WINDOW = int(128000*0.9)
 MODEL = ""
 needle = ""
 SAMPLES = 1
