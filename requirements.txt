@@ -4,3 +4,5 @@
  pandas
  pyarrow
  pyyaml
+ tiktoken
+ zai-sdk

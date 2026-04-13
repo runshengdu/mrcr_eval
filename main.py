@@ -12,15 +12,37 @@ import csv
 import re
 from typing import Any, Awaitable, Callable
 import yaml
+import tiktoken
 
-MAX_CONTEXT_WINDOW = int(256000*0.9)
 MODEL = ""
 needle = ""
 SAMPLES = 1
 MAX_RETRIES = 3
 REQUEST_DELAY_SECONDS = 0
-TOKEN_RATIO_UPDATE_EVERY = 10
-WARMUP_MAX_PROMPT_CHARS = 50000
+
+_enc = tiktoken.get_encoding("o200k_base")
+
+
+def n_tokens(messages: list[dict]) -> int:
+    total = 0
+    for m in messages:
+        c = m.get("content", "")
+        if c is None:
+            continue
+        if isinstance(c, str):
+            total += len(_enc.encode(c))
+        else:
+            total += len(_enc.encode(str(c)))
+    return total
+
+
+def default_max_context_window() -> int:
+    return int(256000 * 0.9)
+
+
+def _run_params(max_context_window: int | None, max_workers: int) -> tuple[int, int]:
+    mcw = default_max_context_window() if max_context_window is None else int(max_context_window)
+    return mcw, max(1, int(max_workers))
 
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -108,8 +130,7 @@ def load_model_config(model_name: str) -> dict[str, Any]:
 _CLIENT_CACHE: dict[tuple[str, str], AsyncOpenAI] = {}
 
 
-def get_client_for_model(model_name: str) -> AsyncOpenAI:
-    cfg = load_model_config(model_name)
+def _client_from_config(cfg: dict[str, Any]) -> AsyncOpenAI:
     cache_key = (str(cfg["base_url"]), str(cfg["api_key"]))
     cached = _CLIENT_CACHE.get(cache_key)
     if cached is not None:
@@ -117,6 +138,10 @@ def get_client_for_model(model_name: str) -> AsyncOpenAI:
     new_client = AsyncOpenAI(api_key=cfg["api_key"], base_url=cfg["base_url"])
     _CLIENT_CACHE[cache_key] = new_client
     return new_client
+
+
+def get_client_for_model(model_name: str) -> AsyncOpenAI:
+    return _client_from_config(load_model_config(model_name))
 
 
 _CHAT_COMPLETION_CONFIG_KEYS = {
@@ -127,11 +152,11 @@ _CHAT_COMPLETION_CONFIG_KEYS = {
 
 
 def build_chat_completion_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {}
-    for k in _CHAT_COMPLETION_CONFIG_KEYS:
-        if k in model_cfg and model_cfg[k] is not None:
-            kwargs[k] = model_cfg[k]
-    return kwargs
+    return {
+        k: model_cfg[k]
+        for k in _CHAT_COMPLETION_CONFIG_KEYS
+        if k in model_cfg and model_cfg[k] is not None
+    }
 
 MODEL_CONFIG: dict[str, Any] | None = None
 client: AsyncOpenAI | None = None
@@ -140,26 +165,22 @@ def init_model(model_id: str) -> None:
     global MODEL, MODEL_CONFIG, client
     MODEL = str(model_id)
     MODEL_CONFIG = load_model_config(MODEL)
-    client = AsyncOpenAI(api_key=MODEL_CONFIG["api_key"], base_url=MODEL_CONFIG["base_url"])
+    client = _client_from_config(MODEL_CONFIG)
 
 def load_dataset(selected_needle: str) -> pd.DataFrame:
     selected_needle = str(selected_needle)
-    return pd.concat([
-        pd.read_parquet(
-            hf_hub_download(
-                repo_id="openai/mrcr",
-                filename=f"{selected_needle}/{selected_needle}_0.parquet",
-                repo_type="dataset",
+    parts = []
+    for suffix in ("_0", "_1"):
+        parts.append(
+            pd.read_parquet(
+                hf_hub_download(
+                    repo_id="openai/mrcr",
+                    filename=f"{selected_needle}/{selected_needle}{suffix}.parquet",
+                    repo_type="dataset",
+                )
             )
-        ),
-        pd.read_parquet(
-            hf_hub_download(
-                repo_id="openai/mrcr",
-                filename=f"{selected_needle}/{selected_needle}_1.parquet",
-                repo_type="dataset",
-            )
-        ),
-    ])
+        )
+    return pd.concat(parts)
 
 dataset: pd.DataFrame | None = None
 
@@ -178,22 +199,6 @@ def grade(response, answer, random_string_to_prepend) -> float:
     response_body = response_norm.removeprefix(random_string_to_prepend).strip()
     answer_body = normalize_leading(answer).removeprefix(random_string_to_prepend).strip()
     return float(SequenceMatcher(None, response_body, answer_body).ratio())
-
-def prompt_char_count(messages: list[dict]) -> int:
-    total = 0
-    for m in messages:
-        c = m.get("content", "")
-        if c is None:
-            continue
-        total += len(str(c))
-    return total
-
-def row_prompt_char_count(row) -> int | None:
-    try:
-        messages = json.loads(row["prompt"])
-        return prompt_char_count(messages)
-    except Exception:
-        return None
 
 def _read_existing_csv_header(filename: Path) -> list[str] | None:
     try:
@@ -215,7 +220,7 @@ async def csv_writer(queue: asyncio.Queue, filename: Path):
         fieldnames = existing
     else:
         header_written = False
-        fieldnames = ["grade", "token_count", "row", "prompt_char_count", "real_prompt_tokens", "updated_token_ratio"]
+        fieldnames = ["grade", "token_count", "row"]
     while True:
         item = await queue.get()
         if item is None:
@@ -224,28 +229,18 @@ async def csv_writer(queue: asyncio.Queue, filename: Path):
         with open(filename, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             if not header_written:
-                writer.writeheader() 
+                writer.writeheader()
                 header_written = True
             writer.writerow(item)
         queue.task_done()
-
-def _init_ratio_state(initial_ratio: float | None = None) -> dict[str, Any]:
-    ratio_state: dict[str, Any] = {"ratio": None, "observed_sum": 0.0, "observed_count": 0, "updates": 0}
-    if initial_ratio is not None:
-        ratio_state["ratio"] = float(initial_ratio)
-        ratio_state["observed_sum"] = float(initial_ratio)
-        ratio_state["observed_count"] = 1
-    return ratio_state
 
 def _init_run_context(csv_filename: Path):
     result_queue = asyncio.Queue()
     jobs_queue: asyncio.Queue = asyncio.Queue()
     io_lock = asyncio.Lock()
-    ratio_lock = asyncio.Lock()
-    ratio_state = _init_ratio_state()
     counter = {"count": 0}
     writer_task = asyncio.create_task(csv_writer(result_queue, csv_filename))
-    return result_queue, jobs_queue, io_lock, ratio_lock, ratio_state, counter, writer_task
+    return result_queue, jobs_queue, io_lock, counter, writer_task
 
 async def _finalize_run(result_queue: asyncio.Queue, writer_task: asyncio.Task, exc, worker_results):
     await result_queue.put(None)
@@ -265,47 +260,6 @@ def _try_get_prompt_tokens_from_usage(usage: Any) -> int | None:
         return int(v) if v is not None else None
     v = getattr(usage, "prompt_tokens", None)
     return int(v) if v is not None else None
-
-def _latest_ratio_from_existing_csv(df_done: pd.DataFrame) -> float | None:
-    if df_done is None or df_done.empty:
-        return None
-    if "updated_token_ratio" in df_done.columns:
-        s = pd.to_numeric(df_done["updated_token_ratio"], errors="coerce").dropna()
-        if not s.empty:
-            return float(s.iloc[-1])
-    if "real_prompt_tokens" in df_done.columns and "prompt_char_count" in df_done.columns:
-        t = pd.to_numeric(df_done["real_prompt_tokens"], errors="coerce")
-        c = pd.to_numeric(df_done["prompt_char_count"], errors="coerce")
-        ok = (~t.isna()) & (~c.isna()) & (c > 0)
-        if bool(ok.any()):
-            last_t = float(t[ok].iloc[-1])
-            last_c = float(c[ok].iloc[-1])
-            return float(last_t / last_c)
-    return None
-
-async def _get_current_ratio(ratio_state: dict[str, Any], ratio_lock: asyncio.Lock) -> float | None:
-    async with ratio_lock:
-        return ratio_state.get("ratio")
-
-async def _observe_ratio(ratio_state: dict[str, Any], ratio_lock: asyncio.Lock, observed_ratio: float) -> float:
-    async with ratio_lock:
-        current = ratio_state.get("ratio")
-        if current is None:
-            ratio_state["ratio"] = float(observed_ratio)
-            ratio_state["observed_sum"] = float(observed_ratio)
-            ratio_state["observed_count"] = 1
-            ratio_state["updates"] = 0
-            return ratio_state["ratio"]
-
-        observed_sum = float(ratio_state.get("observed_sum") or 0.0) + float(observed_ratio)
-        observed_count = int(ratio_state.get("observed_count") or 0) + 1
-        ratio_state["observed_sum"] = observed_sum
-        ratio_state["observed_count"] = observed_count
-
-        if observed_count % TOKEN_RATIO_UPDATE_EVERY == 0:
-            ratio_state["ratio"] = float(observed_sum / float(observed_count))
-            ratio_state["updates"] = int(ratio_state.get("updates") or 0) + 1
-        return float(ratio_state["ratio"])
 
 async def _run_worker_pool(jobs_queue: asyncio.Queue, *, max_workers: int, process_item: Callable[[Any], Awaitable[None]]):
     stop_event = asyncio.Event()
@@ -335,56 +289,26 @@ async def _run_worker_pool(jobs_queue: asyncio.Queue, *, max_workers: int, proce
     worker_results = await asyncio.gather(*workers, return_exceptions=True)
     return first_exc.get("exc"), worker_results
 
-async def _warmup_ratio(*, dataset: pd.DataFrame, result_queue: asyncio.Queue, io_lock: asyncio.Lock, ratio_state: dict[str, Any], ratio_lock: asyncio.Lock, counter: dict, samples: int, max_attempts: int, only_short_prompts: bool) -> int:
-    warmup_attempts = 0
-    for idx, row in dataset.iterrows():
-        if warmup_attempts >= max_attempts:
-            break
-        if only_short_prompts:
-            cc = row_prompt_char_count(row)
-            if cc is None or cc >= WARMUP_MAX_PROMPT_CHARS:
-                continue
-
-        warmup_attempts += 1
-        print(f"Running warmup on row={idx} (attempt {warmup_attempts}/{max_attempts})")
-
-        try:
-            await process_row(
-                idx,
-                row,
-                result_queue,
-                io_lock,
-                ratio_state,
-                ratio_lock,
-                counter,
-                resume_mode=False,
-                samples=samples,
-                skip_length_check=True,
-                emit_result=False,
-            )
-        except Exception as e:
-            print(f"Warmup failed on row={idx}: {e}")
-
-        if (await _get_current_ratio(ratio_state, ratio_lock)) is not None:
-            print(f"Warmup success. Ratio initialized.")
-            break
-    return warmup_attempts
-
-async def process_row(idx, row, queue: asyncio.Queue, io_lock: asyncio.Lock, ratio_state: dict[str, Any], ratio_lock: asyncio.Lock, counter: dict, client_api: AsyncOpenAI = None, model_name: str = None, resume_mode: bool = False, samples: int = SAMPLES, skip_length_check: bool = False, emit_result: bool = True):
+async def process_row(
+    idx,
+    row,
+    queue: asyncio.Queue,
+    io_lock: asyncio.Lock,
+    counter: dict,
+    max_context_window: int,
+    *,
+    client_api: AsyncOpenAI | None = None,
+    model_name: str | None = None,
+    samples: int = SAMPLES,
+):
     """Process a single dataset row with sampling and retries.
     - For each row, call the API `samples` times and average the grade.
     - Each API call has up to MAX_RETRIES attempts.
-    - If a sample fails all retries: non-resume mode aborts; resume mode asks whether to skip the row.
+    - If a sample fails all retries: the row is skipped (logged, no prompt).
     """
     messages = json.loads(row["prompt"])
-    char_count = prompt_char_count(messages)
-    current_ratio = await _get_current_ratio(ratio_state, ratio_lock)
-    # If ratio is not initialized (Warmup), we use 0 (and skip check is True)
-    # If ratio is initialized, we use char_count * ratio
-    estimated_token_count = int(char_count * current_ratio) if (current_ratio is not None) else 0
-    
-    
-    if not skip_length_check and estimated_token_count > MAX_CONTEXT_WINDOW:
+    est = n_tokens(messages)
+    if est > max_context_window:
         return
 
     if client_api is None and (client is None or MODEL_CONFIG is None):
@@ -400,12 +324,9 @@ async def process_row(idx, row, queue: asyncio.Queue, io_lock: asyncio.Lock, rat
 
     grades: list[float] = []
     last_err_msg = None
-    row_ratio_observed = False
-    real_prompt_tokens: int | None = None
-    updated_ratio: float | None = None
+    api_prompt_tokens: int | None = None
 
     for s in range(samples):
-        # retry up to MAX_RETRIES for this sample
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 await asyncio.sleep(REQUEST_DELAY_SECONDS)
@@ -422,7 +343,7 @@ async def process_row(idx, row, queue: asyncio.Queue, io_lock: asyncio.Lock, rat
                     usage = getattr(chunk, "usage", None)
                     pt = _try_get_prompt_tokens_from_usage(usage)
                     if pt is not None:
-                        real_prompt_tokens = pt
+                        api_prompt_tokens = pt
 
                     choices = getattr(chunk, "choices", None)
                     if not choices:
@@ -441,98 +362,58 @@ async def process_row(idx, row, queue: asyncio.Queue, io_lock: asyncio.Lock, rat
                 response = "".join(chunks)
                 g = grade(response, row["answer"], row["random_string_to_prepend"])
                 grades.append(float(g))
-
-                if (not row_ratio_observed) and (real_prompt_tokens is not None) and char_count > 0:
-                    observed_ratio = float(real_prompt_tokens) / float(char_count)
-                    updated_ratio = await _observe_ratio(ratio_state, ratio_lock, observed_ratio)
-                    row_ratio_observed = True
                 break
             except Exception as e:
                 status_code = getattr(e, "status_code", None) or getattr(e, "http_status", None) or "unknown"
                 last_err_msg = f"status={status_code}, error={e}"
                 continue
 
-        # after retries, if this sample didn't succeed
         if len(grades) <= s:
             async with io_lock:
-                print(f"[ERROR] row={idx} sample={s+1}/{samples} failed after {MAX_RETRIES} retries: {last_err_msg}", flush=True)
-                if resume_mode:
-                    choice = input("该题在所有重试后仍失败，是否跳过该行？(y/n): ").strip().lower()
-                else:
-                    choice = None
-            if resume_mode:
-                if choice and choice.startswith("y"):
-                    async with io_lock:
-                        print(f"[SKIP] row={idx} 用户选择跳过该行。", flush=True)
-                    return
-                raise RuntimeError(f"row={idx} failed after retries: {last_err_msg}")
-            raise RuntimeError(f"row={idx} failed after retries: {last_err_msg}")
+                print(
+                    f"[SKIP] row={idx} sample={s+1}/{samples} LLM 在 {MAX_RETRIES} 次重试后仍失败，已自动跳过: {last_err_msg}",
+                    flush=True,
+                )
+            return
 
-    avg_g = sum(grades) / len(grades) if grades else 0.0
-    
-    # Final token count for CSV/Logging: prefer real, then estimated
-    final_token_count = real_prompt_tokens if real_prompt_tokens is not None else estimated_token_count
+    avg_g = sum(grades) / len(grades)
 
-    if emit_result:
+    if api_prompt_tokens is None:
         async with io_lock:
-            counter["count"] += 1
-            ratio_for_print = updated_ratio if updated_ratio is not None else current_ratio
-            ratio_str = f"{ratio_for_print:.8f}" if ratio_for_print is not None else "none"
             print(
-                f"row={idx} processed={counter['count']} samples={samples} avg_grade={avg_g:.6f} "
-                f"tokens={real_prompt_tokens} chars={char_count} ratio={ratio_str}",
+                f"[SKIP CSV] row={idx} samples={samples} avg_grade={avg_g:.6f} "
+                f"tiktoken_est={est} api_prompt_tokens=None (usage 未返回 prompt_tokens，结果不写入 CSV)",
                 flush=True,
             )
-        await queue.put({
-            "grade": avg_g,
-            "token_count": final_token_count,
-            "row": idx,
-            "prompt_char_count": char_count,
-            "real_prompt_tokens": real_prompt_tokens,
-            "updated_token_ratio": updated_ratio,
-        })
+        return
 
-async def run_parallel(samples: int, csv_filename: Path = None, max_workers: int = 20):
+    token_cell = str(api_prompt_tokens)
+    async with io_lock:
+        counter["count"] += 1
+        print(
+            f"row={idx} processed={counter['count']} samples={samples} avg_grade={avg_g:.6f} "
+            f"tiktoken_est={est} api_prompt_tokens={api_prompt_tokens}",
+            flush=True,
+        )
+    await queue.put({
+        "grade": avg_g,
+        "token_count": token_cell,
+        "row": idx,
+    })
+
+async def run_parallel(samples: int, csv_filename: Path | None = None, max_workers: int = 20, max_context_window: int | None = None):
     if dataset is None:
         raise RuntimeError("Dataset is not initialized. Please call load_dataset() first.")
-    max_workers = max(1, int(max_workers))
-    # Prepare CSV filename early and handle header
+    mcw, max_workers = _run_params(max_context_window, max_workers)
     if csv_filename is None:
         csv_filename = build_default_csv_path(MODEL, needle)
     else:
         csv_filename.parent.mkdir(parents=True, exist_ok=True)
-    result_queue, jobs_queue, io_lock, ratio_lock, ratio_state, counter, writer_task = _init_run_context(csv_filename)
-
-    MAX_WARMUP_ATTEMPTS = 3
-    warmup_attempts = await _warmup_ratio(
-        dataset=dataset,
-        result_queue=result_queue,
-        io_lock=io_lock,
-        ratio_state=ratio_state,
-        ratio_lock=ratio_lock,
-        counter=counter,
-        samples=samples,
-        max_attempts=MAX_WARMUP_ATTEMPTS,
-        only_short_prompts=True,
-    )
-    if warmup_attempts == 0:
-        warmup_attempts = await _warmup_ratio(
-            dataset=dataset,
-            result_queue=result_queue,
-            io_lock=io_lock,
-            ratio_state=ratio_state,
-            ratio_lock=ratio_lock,
-            counter=counter,
-            samples=samples,
-            max_attempts=MAX_WARMUP_ATTEMPTS,
-            only_short_prompts=False,
-        )
-
-    if (await _get_current_ratio(ratio_state, ratio_lock)) is None:
-        raise RuntimeError(f"Warmup failed: Could not initialize token ratio after {warmup_attempts} attempts.")
+    result_queue, jobs_queue, io_lock, counter, writer_task = _init_run_context(csv_filename)
 
     for idx, row in dataset.iterrows():
         await jobs_queue.put((idx, row))
+
     async def process_item(item: Any) -> None:
         idx, row = item
         await process_row(
@@ -540,19 +421,18 @@ async def run_parallel(samples: int, csv_filename: Path = None, max_workers: int
             row,
             result_queue,
             io_lock,
-            ratio_state,
-            ratio_lock,
             counter,
-            resume_mode=False,
+            mcw,
             samples=samples,
         )
+
     exc, worker_results = await _run_worker_pool(jobs_queue, max_workers=max_workers, process_item=process_item)
     await _finalize_run(result_queue, writer_task, exc, worker_results)
 
 
 # Resume logic: read latest CSV, continue untested rows, and append results
-async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
-    max_workers = max(1, int(max_workers))
+async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20, max_context_window: int | None = None):
+    mcw, max_workers = _run_params(max_context_window, max_workers)
     if not csv_filename.exists():
         raise FileNotFoundError(f"未找到结果CSV文件：{csv_filename}")
 
@@ -560,22 +440,15 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
     dataset_resume = dataset if dataset is not None else load_dataset(needle)
 
     tested_rows = set()
-    df_done = None
     try:
-        df_done = pd.read_csv(csv_filename)
-        if "row" in df_done.columns:
-            tested_rows = set(pd.to_numeric(df_done["row"], errors="coerce").dropna().astype(int).tolist())
+        df_prior = pd.read_csv(csv_filename)
+        if "row" in df_prior.columns:
+            tested_rows = set(pd.to_numeric(df_prior["row"], errors="coerce").dropna().astype(int).tolist())
     except Exception as e:
         print(f"读取已有结果失败，将从头开始。原因: {e}")
 
     pending_count = 0
-    result_queue, jobs_queue, io_lock, ratio_lock, ratio_state, counter, writer_task = _init_run_context(csv_filename)
-
-    existing_ratio = _latest_ratio_from_existing_csv(df_done) if df_done is not None else None
-    if existing_ratio is None:
-        raise RuntimeError("Resume failed: Could not load token ratio from existing CSV (updated_token_ratio/real_prompt_tokens).")
-    async with ratio_lock:
-        ratio_state.update(_init_ratio_state(existing_ratio))
+    result_queue, jobs_queue, io_lock, counter, writer_task = _init_run_context(csv_filename)
 
     for idx, row in dataset_resume.iterrows():
         if idx in tested_rows:
@@ -589,6 +462,7 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
         return
 
     print(f"待续测行数: {pending_count}")
+
     async def process_item(item: Any) -> None:
         idx, row = item
         await process_row(
@@ -596,14 +470,11 @@ async def run_resume(samples: int, csv_filename: Path, max_workers: int = 20):
             row,
             result_queue,
             io_lock,
-            ratio_state,
-            ratio_lock,
             counter,
-            client,
-            None,
-            True,
-            samples,
+            mcw,
+            samples=samples,
         )
+
     exc, worker_results = await _run_worker_pool(jobs_queue, max_workers=max_workers, process_item=process_item)
     await _finalize_run(result_queue, writer_task, exc, worker_results)
     print(f"续测完成，结果已追加到 {csv_filename}")
@@ -613,26 +484,33 @@ if __name__ == "__main__":
     parser.add_argument("--save-to", type=str, default=None, help="Path to save CSV results. If file exists, resume mode is used. If not provided, saves to ./results/{needle}/model_timestamp.csv.")
     parser.add_argument("--samples", type=int, default=SAMPLES, help="Number of samples per question")
     parser.add_argument("--max-workers", type=int, default=20, help="Maximum number of concurrent workers")
+    parser.add_argument(
+        "--max-context-window",
+        type=int,
+        default=None,
+        help="Max prompt size (tiktoken o200k_base estimate). Rows above this are skipped.",
+    )
     parser.add_argument("--needle", type=str, default="8needle", help="Needle dataset subdir name (e.g. 2needle/8needle)")
     parser.add_argument("--model-id", type=str, default="kimi-k2.5", help="Model name (key in models.yaml)")
     args = parser.parse_args()
     samples = max(1, args.samples)
     max_workers = max(1, args.max_workers)
+    max_context_window = args.max_context_window if args.max_context_window is not None else default_max_context_window()
     needle = str(args.needle)
     dataset = load_dataset(needle)
 
     init_model(args.model_id)
-    
+
     if args.save_to:
         csv_path = Path(args.save_to)
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         if csv_path.exists():
             print(f"文件已存在，使用续测模式：{csv_path}")
-            asyncio.run(run_resume(samples, csv_path, max_workers))
+            asyncio.run(run_resume(samples, csv_path, max_workers, max_context_window))
         else:
             print(f"保存结果到：{csv_path}")
-            asyncio.run(run_parallel(samples, csv_path, max_workers))
+            asyncio.run(run_parallel(samples, csv_path, max_workers, max_context_window))
     else:
         csv_path = build_default_csv_path(MODEL, needle)
         print(f"保存结果到：{csv_path}")
-        asyncio.run(run_parallel(samples, csv_path, max_workers))
+        asyncio.run(run_parallel(samples, csv_path, max_workers, max_context_window))
