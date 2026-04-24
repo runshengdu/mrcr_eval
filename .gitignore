@@ -1,2 +1,9 @@
 .mrcr
 .mrcr/
+results/
+results
+
+# Batch request payloads often exceed GitHub's 100MB limit
+batch_api/**/artifacts/**/batch_input.jsonl
+batch_api/moonshot/artifacts/
+batch_api/qwen/artifacts/

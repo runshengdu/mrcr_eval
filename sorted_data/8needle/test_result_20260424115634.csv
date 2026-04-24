@@ -1,0 +1,7 @@
+bin,models
+<8000,"deepseek-v4-flash=0.910693|n=105, deepseek-v4-pro=0.845638|n=105"
+<16000,"deepseek-v4-flash=0.856846|n=200, deepseek-v4-pro=0.864570|n=200"
+<32000,"deepseek-v4-flash=0.851050|n=297, deepseek-v4-pro=0.891291|n=297"
+<64000,"deepseek-v4-flash=0.828173|n=393, deepseek-v4-pro=0.885415|n=393"
+<128000,"deepseek-v4-flash=0.830519|n=494, deepseek-v4-pro=0.879458|n=494"
+<256000,"deepseek-v4-flash=0.809333|n=583, deepseek-v4-pro=0.877320|n=583"
