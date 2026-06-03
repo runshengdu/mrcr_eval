@@ -21,6 +21,7 @@ TERMINAL_BATCH_STATES = {"completed", "failed", "expired", "cancelled"}
 KIMI_BATCH_FORBIDDEN_PARAMS = {
     "temperature",
     "max_tokens",
+    "max_completion_tokens",
     "top_p",
     "n",
     "presence_penalty",

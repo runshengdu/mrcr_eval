@@ -9,7 +9,7 @@ This repository runs OpenAI MRCR evaluations against OpenAI-compatible model API
   ```bash
   pip install pandas huggingface_hub openai pyyaml matplotlib tiktoken pyarrow
   ```
-- Configure models in `models.yaml`. Each model entry provides a `name`, `base_url`, `api_key`, and optional chat-completion parameters such as `temperature`, `max_tokens`, and `extra_body`.
+- Configure models in `models.yaml`. Each model entry provides a `name`, `base_url`, and `api_key`. All other fields (for example `temperature`, `max_tokens`, `max_completion_tokens`, `extra_body`) are forwarded to the chat-completions request as-is.
 - `models.yaml` supports environment variable placeholders such as `${OPENROUTER_API_KEY}`, `${MOONSHOT_API_KEY}`, `${DASHSCOPE_API_KEY}`, `${DEEPSEEK_API_KEY}`, `${GLM_API_KEY}`, `${ARK_API_KEY}`, and `${MINIMAX_API_KEY}`.
 - The dataset is downloaded at runtime from Hugging Face dataset `openai/mrcr`.
 

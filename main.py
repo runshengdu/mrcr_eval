@@ -37,7 +37,7 @@ def n_tokens(messages: list[dict]) -> int:
 
 
 def default_max_context_window() -> int:
-    return int(256000 * 0.9)
+    return int(600000 * 0.9)
 
 
 def _run_params(max_context_window: int | None, max_workers: int) -> tuple[int, int]:
@@ -144,18 +144,16 @@ def get_client_for_model(model_name: str) -> AsyncOpenAI:
     return _client_from_config(load_model_config(model_name))
 
 
-_CHAT_COMPLETION_CONFIG_KEYS = {
-    "temperature",
-    "max_tokens",
-    "extra_body",
-}
+# Keys used only for client setup / model lookup — not forwarded to chat.completions.
+_CLIENT_ONLY_CONFIG_KEYS = frozenset({"name", "base_url", "api_key"})
 
 
 def build_chat_completion_kwargs(model_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Pass through all model.yaml fields except client-only keys."""
     return {
-        k: model_cfg[k]
-        for k in _CHAT_COMPLETION_CONFIG_KEYS
-        if k in model_cfg and model_cfg[k] is not None
+        k: v
+        for k, v in model_cfg.items()
+        if k not in _CLIENT_ONLY_CONFIG_KEYS and v is not None
     }
 
 MODEL_CONFIG: dict[str, Any] | None = None
