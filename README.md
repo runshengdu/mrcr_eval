@@ -54,12 +54,9 @@ python main.py --needle 8needle --model-id kimi-k2.5 --samples 3 --max-workers 1
 
 ## Batch API Evaluation (`batch_api/`)
 
-`batch_api/moonshot/moonshot.py` and `batch_api/qwen/qwen.py` run the same MRCR grading flow through provider Batch APIs. They reuse dataset loading, model config, token estimation, grading, default CSV paths, and resume-row detection from `main.py`.
+`batch_api/batch.py` runs the MRCR grading flow through OpenAI-compatible provider Batch APIs. It reuses dataset loading, model config, token estimation, grading, default CSV paths, and resume-row detection from `main.py`.
 
-Available scripts:
-
-- `batch_api/moonshot/moonshot.py`: default model `kimi-k2.6`, default artifacts dir `batch_api/moonshot/artifacts`.
-- `batch_api/qwen/qwen.py`: default model `qwen3.6-flash`, default artifacts dir `batch_api/qwen/artifacts`.
+Default model is `kimi-k2.6`; default artifacts dir is `batch_api/artifacts`.
 
 Batch steps:
 
@@ -67,6 +64,7 @@ Batch steps:
 - `upload`: upload the prepared JSONL file.
 - `create`: create the batch job.
 - `wait`: poll until the batch reaches a terminal state.
+- `cancel`: cancel an in-progress batch job (Moonshot / DashScope OpenAI-compatible API).
 - `collect`: download output/error JSONL, grade responses, and append successful rows to CSV.
 - `all`: run the whole pipeline in one command.
 
@@ -76,45 +74,51 @@ Batch steps:
 
 Common arguments:
 
-- `--step {all,prepare,upload,create,wait,collect,submit,poll}`: default `all`.
+- `--step {all,prepare,upload,create,wait,cancel,collect,submit,poll}`: default `all`.
 - `--needle NAME`: default `8needle`.
-- `--model-id NAME`: model name from `models.yaml`.
+- `--model-id NAME`: model name from `models.yaml`, default `kimi-k2.6`.
 - `--save-to PATH`: result CSV path. Existing rows are skipped during `prepare`.
 - `--max-context-window N`: default `90%` of `256000`.
 - `--completion-window VALUE`: default `24h`.
 - `--poll-interval-seconds N`: default `10`.
 - `--artifacts-dir PATH`: where intermediate files are stored.
-- `--run-dir PATH`: required for `upload`, `create`, `wait`, and `collect`.
-- `--batch-id ID`: optional override for `wait` and `collect`.
+- `--run-dir PATH`: required for `upload`, `create`, `wait`, `cancel`, and `collect`.
+- `--batch-id ID`: optional override for `wait`, `cancel`, and `collect`.
 
 ### Batch Examples
 
-Run Moonshot end-to-end:
+Run end-to-end (default model `kimi-k2.6`):
 
 ```bash
-python batch_api/moonshot/moonshot.py --step all --needle 8needle --model-id kimi-k2.6
+python batch_api/batch.py --step all --needle 8needle
 ```
 
-Run Qwen end-to-end:
+Run another model:
 
 ```bash
-python batch_api/qwen/qwen.py --step all --needle 8needle --model-id qwen3.6-flash
+python batch_api/batch.py --step all --needle 8needle --model-id qwen3.6-flash
 ```
 
 Run step by step:
 
 ```bash
-python batch_api/qwen/qwen.py --step prepare --needle 8needle --model-id qwen3.6-flash
-python batch_api/qwen/qwen.py --step upload --run-dir batch_api/qwen/artifacts/8needle/qwen3.6-flash/20260423_120516
-python batch_api/qwen/qwen.py --step create --run-dir batch_api/qwen/artifacts/8needle/qwen3.6-flash/20260423_120516
-python batch_api/qwen/qwen.py --step wait --run-dir batch_api/qwen/artifacts/8needle/qwen3.6-flash/20260423_120516
-python batch_api/qwen/qwen.py --step collect --run-dir batch_api/qwen/artifacts/8needle/qwen3.6-flash/20260423_120516
+python batch_api/batch.py --step prepare --needle 8needle --model-id qwen3.6-flash
+python batch_api/batch.py --step upload --run-dir batch_api/artifacts/8needle/qwen3.6-flash/20260423_120516
+python batch_api/batch.py --step create --run-dir batch_api/artifacts/8needle/qwen3.6-flash/20260423_120516
+python batch_api/batch.py --step wait --run-dir batch_api/artifacts/8needle/qwen3.6-flash/20260423_120516
+python batch_api/batch.py --step collect --run-dir batch_api/artifacts/8needle/qwen3.6-flash/20260423_120516
+```
+
+Cancel an in-progress batch:
+
+```bash
+python batch_api/batch.py --step cancel --run-dir batch_api/artifacts/8needle/kimi-k2.6/20260423_120516
 ```
 
 Intermediate artifacts are stored under:
 
 ```text
-batch_api/{provider}/artifacts/{needle}/{model}/{timestamp}/
+batch_api/artifacts/{needle}/{model}/{timestamp}/
 ```
 
 Important files include `batch_input.jsonl`, `batch_output.jsonl`, `batch_error.jsonl`, `row_payloads.json`, and `meta.json`.
@@ -145,5 +149,5 @@ Threshold statistics are only calculated when the model has data reaching that t
 ## Resume Behavior
 
 - `main.py`: if `--save-to` points to an existing CSV, rows already present in the `row` column are skipped and remaining rows are appended.
-- Batch scripts: `prepare` reads the target CSV, excludes completed rows, and only submits missing rows.
+- `batch_api/batch.py`: `prepare` reads the target CSV, excludes completed rows, and only submits missing rows.
 - If an existing CSV cannot be read, the scripts treat it as having no prior completed rows.

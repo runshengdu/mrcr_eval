@@ -11,7 +11,7 @@ import pandas as pd
 from openai import OpenAI
 
 # Ensure repository root is importable when running this file directly.
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -27,15 +27,16 @@ KIMI_BATCH_FORBIDDEN_PARAMS = {
     "presence_penalty",
     "frequency_penalty",
 }
+KIMI_BATCH_MODELS = {"kimi-k2.5", "kimi-k2.6"}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run MRCR with Moonshot Batch API")
+    parser = argparse.ArgumentParser(description="Run MRCR with OpenAI-compatible Batch API")
     parser.add_argument(
         "--step",
         type=str,
         default="all",
-        choices=["all", "prepare", "upload", "create", "wait", "collect", "submit", "poll"],
+        choices=["all", "prepare", "upload", "create", "wait", "cancel", "collect", "submit", "poll"],
         help="Pipeline step to run. Recommended flow: prepare/upload/create/wait/collect.",
     )
     parser.add_argument("--needle", type=str, default="8needle", help="Needle dataset subdir name")
@@ -67,20 +68,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         type=str,
-        default="batch_api/moonshot/artifacts",
+        default="batch_api/artifacts",
         help="Directory to store intermediate artifacts (jsonl, metadata).",
     )
     parser.add_argument(
         "--run-dir",
         type=str,
         default=None,
-        help="Existing run directory, required by upload/create/wait/collect steps.",
+        help="Existing run directory, required by upload/create/wait/cancel/collect steps.",
     )
     parser.add_argument(
         "--batch-id",
         type=str,
         default=None,
-        help="Batch ID override for wait/collect steps.",
+        help="Batch ID override for wait/cancel/collect steps.",
     )
     return parser.parse_args()
 
@@ -199,7 +200,7 @@ def build_batch_request_body(
     if isinstance(extra_body, dict):
         body.update(extra_body)
 
-    if model_name in {"kimi-k2.5", "kimi-k2.6"}:
+    if model_name in KIMI_BATCH_MODELS:
         for k in KIMI_BATCH_FORBIDDEN_PARAMS:
             body.pop(k, None)
     return body
@@ -228,6 +229,12 @@ def create_batch(client: OpenAI, input_file_id: str, completion_window: str) -> 
     )
     print(f"Batch 任务已创建: {batch.id}")
     return batch.id
+
+
+def cancel_batch(client: OpenAI, batch_id: str) -> Any:
+    batch = client.batches.cancel(batch_id)
+    print(f"Batch 取消请求已提交: {batch.id}，当前状态: {batch.status}")
+    return batch
 
 
 def poll_batch(client: OpenAI, batch_id: str, poll_interval_seconds: int) -> Any:
@@ -460,6 +467,22 @@ def stage_wait(args: argparse.Namespace, run_dir: Path) -> Any:
     return batch
 
 
+def stage_cancel(args: argparse.Namespace, run_dir: Path) -> Any:
+    meta_json, metadata = load_meta_or_fail(run_dir)
+    model_name = str(metadata["model"])
+    batch_id = args.batch_id or metadata.get("batch_id")
+    if not batch_id:
+        raise ValueError("未找到 batch_id。请先执行 create，或通过 --batch-id 指定。")
+
+    client = make_client(model_name)
+    batch = cancel_batch(client, str(batch_id))
+    metadata["batch_id"] = str(batch_id)
+    metadata["batch_status"] = batch.status
+    save_json(meta_json, metadata)
+    print(f"cancel 完成，当前状态: {batch.status}")
+    return batch
+
+
 def stage_collect(args: argparse.Namespace, run_dir: Path, batch_obj: Any | None = None) -> None:
     meta_json, metadata = load_meta_or_fail(run_dir)
     model_name = str(metadata["model"])
@@ -538,7 +561,7 @@ def main() -> None:
     elif step == "poll":
         step = "wait"
 
-    if step in {"upload", "create", "wait", "collect"} and not args.run_dir:
+    if step in {"upload", "create", "wait", "cancel", "collect"} and not args.run_dir:
         raise ValueError(f"--step {step} 需要传入 --run-dir")
 
     if step == "prepare":
@@ -555,6 +578,10 @@ def main() -> None:
 
     if step == "wait":
         stage_wait(args, Path(args.run_dir))
+        return
+
+    if step == "cancel":
+        stage_cancel(args, Path(args.run_dir))
         return
 
     if step == "collect":
